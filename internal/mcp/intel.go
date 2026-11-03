@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/deixis/governor/internal/goanalysis"
+	"github.com/deixis/governor/internal/analysis"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
-// Code intelligence tools, backed by the in-process goanalysis package.
+// Code intelligence tools, backed by the in-process analysis package.
 
 type diagnosticsParams struct {
 	Files []string `json:"files,omitempty" jsonschema:"Optional absolute paths; when set, only errors in these files are reported."`
@@ -19,7 +19,7 @@ func (h *handler) diagnosticsHandler(ctx context.Context, _ *sdkmcp.CallToolRequ
 	if err != nil {
 		return errorResult(fmt.Sprintf("diagnostics failed: %v", err))
 	}
-	return textResult(goanalysis.FormatDiagnostics(diags))
+	return textResult(analysis.FormatDiagnostics(diags))
 }
 
 type packageAPIParams struct {
@@ -46,7 +46,7 @@ func (h *handler) searchHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, 
 	if err != nil {
 		return errorResult(fmt.Sprintf("search failed: %v", err))
 	}
-	return textResult(goanalysis.FormatSymbols(syms))
+	return textResult(analysis.FormatSymbols(syms))
 }
 
 type fileContextParams struct {
@@ -61,7 +61,7 @@ func (h *handler) fileContextHandler(ctx context.Context, _ *sdkmcp.CallToolRequ
 	if err != nil {
 		return errorResult(fmt.Sprintf("file context failed: %v", err))
 	}
-	return textResult(goanalysis.FormatFileContext(fc))
+	return textResult(analysis.FormatFileContext(fc))
 }
 
 type referencesParams struct {
@@ -77,7 +77,7 @@ func (h *handler) referencesHandler(ctx context.Context, _ *sdkmcp.CallToolReque
 	if err != nil {
 		return errorResult(fmt.Sprintf("references failed: %v", err))
 	}
-	return textResult(goanalysis.FormatReferences(p.Symbol, refs))
+	return textResult(analysis.FormatReferences(p.Symbol, refs))
 }
 
 type symbolParams struct {
@@ -100,7 +100,7 @@ func (h *handler) definitionHandler(ctx context.Context, _ *sdkmcp.CallToolReque
 	if err != nil {
 		return errorResult(fmt.Sprintf("definition failed: %v", err))
 	}
-	return textResult(goanalysis.FormatDefinition(def))
+	return textResult(analysis.FormatDefinition(def))
 }
 
 func (h *handler) implementationsHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p symbolParams) (*sdkmcp.CallToolResult, any, error) {
@@ -111,7 +111,7 @@ func (h *handler) implementationsHandler(ctx context.Context, _ *sdkmcp.CallTool
 	if err != nil {
 		return errorResult(fmt.Sprintf("implementations failed: %v", err))
 	}
-	return textResult(goanalysis.FormatImplementations(p.Symbol, impls))
+	return textResult(analysis.FormatImplementations(p.Symbol, impls))
 }
 
 func (h *handler) callersHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p symbolParams) (*sdkmcp.CallToolResult, any, error) {
@@ -122,7 +122,7 @@ func (h *handler) callersHandler(ctx context.Context, _ *sdkmcp.CallToolRequest,
 	if err != nil {
 		return errorResult(fmt.Sprintf("callers failed: %v", err))
 	}
-	return textResult(goanalysis.FormatCallers(p.Symbol, calls))
+	return textResult(analysis.FormatCallers(p.Symbol, calls))
 }
 
 func (h *handler) calleesHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p symbolParams) (*sdkmcp.CallToolResult, any, error) {
@@ -133,7 +133,7 @@ func (h *handler) calleesHandler(ctx context.Context, _ *sdkmcp.CallToolRequest,
 	if err != nil {
 		return errorResult(fmt.Sprintf("callees failed: %v", err))
 	}
-	return textResult(goanalysis.FormatCallees(p.Symbol, calls))
+	return textResult(analysis.FormatCallees(p.Symbol, calls))
 }
 
 type outlineParams struct {
@@ -148,7 +148,7 @@ func (h *handler) outlineHandler(ctx context.Context, _ *sdkmcp.CallToolRequest,
 	if err != nil {
 		return errorResult(fmt.Sprintf("outline failed: %v", err))
 	}
-	return textResult(goanalysis.FormatOutline(entries))
+	return textResult(analysis.FormatOutline(entries))
 }
 
 type fixParams struct {
@@ -163,7 +163,7 @@ func (h *handler) fixHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p f
 	if err != nil {
 		return errorResult(fmt.Sprintf("fix failed: %v", err))
 	}
-	return textResult(goanalysis.FormatFixResults(results))
+	return textResult(analysis.FormatFixResults(results))
 }
 
 // registerIntelTools registers the code intelligence tools.

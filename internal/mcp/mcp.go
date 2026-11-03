@@ -10,7 +10,7 @@ import (
 
 	"github.com/deixis/governor"
 	"github.com/deixis/governor/internal/config"
-	"github.com/deixis/governor/internal/goanalysis"
+	"github.com/deixis/governor/internal/analysis"
 	"github.com/deixis/governor/internal/report"
 	"github.com/deixis/governor/internal/runner"
 	"github.com/deixis/governor/internal/workflow"
@@ -25,7 +25,7 @@ type handler struct {
 	engine *workflow.Engine
 	runner *runner.Runner // retained for workspace handler and updateWorkspaceFromRoots
 	store  report.Store
-	intel  *goanalysis.Workspace
+	intel  *analysis.Workspace
 }
 
 // NewServer creates an MCP server with all Governor tools registered.
@@ -39,7 +39,7 @@ func NewServer(cfg *config.Config, r *runner.Runner, store report.Store, workspa
 		},
 		runner: r,
 		store:  store,
-		intel:  goanalysis.NewWorkspace(workspace),
+		intel:  analysis.NewWorkspace(workspace),
 	}
 
 	mcpOpts := &mcp.ServerOptions{

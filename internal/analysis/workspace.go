@@ -1,8 +1,11 @@
-// Package goanalysis provides in-process Go code intelligence built on
+// Package analysis provides in-process Go code intelligence built on
 // golang.org/x/tools/go/packages and go/types. It replaces the former
 // gopls subprocess proxy: no external binary, one cached type-checked
 // snapshot of the workspace per fingerprint.
-package goanalysis
+//
+// When a file here needs golang.org/x/tools/go/analysis directly, import
+// it as goanalysis to keep the two names apart.
+package analysis
 
 import (
 	"context"

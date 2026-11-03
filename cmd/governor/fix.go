@@ -11,7 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/deixis/governor/internal/goanalysis"
+	"github.com/deixis/governor/internal/analysis"
 )
 
 func fixMain(args []string) error {
@@ -55,7 +55,7 @@ agent's post-edit hook and pass the edited path, or pipe paths with -stdin.`)
 	if err != nil {
 		return fmt.Errorf("determining workspace: %w", err)
 	}
-	ws := goanalysis.NewWorkspace(workspace)
+	ws := analysis.NewWorkspace(workspace)
 
 	results, err := ws.Fix(ctx, files)
 	if err != nil {
@@ -72,7 +72,7 @@ agent's post-edit hook and pass the edited path, or pipe paths with -stdin.`)
 		}
 	}
 	if noisy || !*quietFlag {
-		fmt.Print(goanalysis.FormatFixResults(results))
+		fmt.Print(analysis.FormatFixResults(results))
 	}
 	if failed {
 		os.Exit(1)

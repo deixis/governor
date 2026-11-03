@@ -1,4 +1,4 @@
-package goanalysis
+package analysis
 
 import (
 	"bytes"
