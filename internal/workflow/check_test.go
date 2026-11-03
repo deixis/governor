@@ -73,6 +73,32 @@ func failingTestJSON() []byte {
 	return []byte(buf.String())
 }
 
+func TestCheck_GofumptFailureIsAnError(t *testing.T) {
+	// A version-manager shim with no version set prints a message and a
+	// version list on a non-zero exit. That output is not a file list.
+	shimOut := "No version is set for command gofumpt\nConsider adding one of the following versions in your config file at .tool-versions\ngofumpt 0.7.0\ngofumpt 0.11.0\n"
+	fr := &fakeRunner{
+		Results: map[string]*runner.Result{
+			"/stub/gofumpt": {ExitCode: 126, Stderr: []byte(shimOut)},
+		},
+	}
+	e := &Engine{
+		Config:       &config.Config{Check: config.CheckConfig{Steps: []string{"test"}}},
+		Runner:       fr,
+		Workspace:    "/project",
+		RepoRoot:     "/project",
+		ToolResolver: func(name string) []string { return []string{"/stub/" + name} },
+	}
+
+	result, err := e.Check(context.Background(), nil, false)
+	if err == nil {
+		t.Fatalf("Check = %+v, want error", result)
+	}
+	if !strings.Contains(err.Error(), "gofumpt failed (exit 126)") || !strings.Contains(err.Error(), "No version is set") {
+		t.Errorf("error = %q, want gofumpt failure with shim output", err)
+	}
+}
+
 func TestCheck_AllPass(t *testing.T) {
 	fr := &fakeRunner{
 		Results: map[string]*runner.Result{

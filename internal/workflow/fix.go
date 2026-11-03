@@ -24,7 +24,10 @@ func (e *Engine) RunFixPhase(ctx context.Context, fix bool) (*FixResult, error) 
 		result.AutoFixes += e.runGofumptFix(ctx)
 		result.AutoFixes += e.runLintFix(ctx)
 	} else {
-		issues := e.runGofumptCheck(ctx)
+		issues, err := e.runGofumptCheck(ctx)
+		if err != nil {
+			return nil, err
+		}
 		result.FormatIssues = issues
 	}
 
@@ -59,21 +62,28 @@ func (e *Engine) runGofumptFix(ctx context.Context) int {
 	return 0
 }
 
-// runGofumptCheck runs gofumpt -l . and returns unformatted files as FormatIssues.
-func (e *Engine) runGofumptCheck(ctx context.Context) []report.FormatIssue {
+// runGofumptCheck runs gofumpt -l . and returns unformatted files as
+// FormatIssues. gofumpt -l exits 0 whether or not it lists files, so a
+// non-zero exit is a tool failure (a version-manager shim with no version
+// set, say) and its output must not be read as a file list.
+func (e *Engine) runGofumptCheck(ctx context.Context) ([]report.FormatIssue, error) {
 	argv := e.resolveTool("gofumpt")
 	if argv == nil {
-		return nil
+		return nil, nil
 	}
 	argv = append(argv, "-l", ".")
 
 	res, err := e.Runner.Run(ctx, argv, "")
 	if err != nil {
-		return nil
+		return nil, fmt.Errorf("running gofumpt: %w", err)
+	}
+	if res.ExitCode != 0 {
+		out := strings.TrimSpace(string(res.Stderr) + string(res.Stdout))
+		return nil, fmt.Errorf("gofumpt failed (exit %d): %s", res.ExitCode, out)
 	}
 
 	var issues []report.FormatIssue
-	for _, file := range strings.Split(strings.TrimSpace(string(res.Stdout)), "\n") {
+	for file := range strings.SplitSeq(strings.TrimSpace(string(res.Stdout)), "\n") {
 		file = strings.TrimSpace(file)
 		if file == "" {
 			continue
@@ -83,7 +93,7 @@ func (e *Engine) runGofumptCheck(ctx context.Context) []report.FormatIssue {
 			Message: fmt.Sprintf("file not formatted: %s", file),
 		})
 	}
-	return issues
+	return issues, nil
 }
 
 // runLintFix runs golangci-lint run --fix and returns the count of fixes applied.

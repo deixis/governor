@@ -53,7 +53,7 @@ Install Governor globally, like `gopls`:
 go install github.com/deixis/governor/cmd/governor@latest
 ```
 
-Requires Go 1.25 or later. Code intelligence runs in process on `go/packages` and `go/types`; no gopls install is needed.
+Requires Go 1.26 or later. Code intelligence runs in process on `go/packages` and `go/types`; no gopls install is needed.
 
 ### Toolchain matching
 

@@ -35,7 +35,10 @@ func (e *Engine) Check(ctx context.Context, packages []string, fix bool) (*Check
 	rr := &report.RunResult{ID: runID, Kind: report.Check}
 
 	// --- Fix phase ---
-	fixRes, _ := e.RunFixPhase(ctx, fix)
+	fixRes, err := e.RunFixPhase(ctx, fix)
+	if err != nil {
+		return nil, err
+	}
 	if fixRes != nil {
 		rr.AutoFixes = fixRes.AutoFixes
 		rr.FormatIssues = fixRes.FormatIssues
@@ -89,8 +92,7 @@ func (e *Engine) Check(ctx context.Context, packages []string, fix bool) (*Check
 		case "lint":
 			summary, err := e.runLint(ctx, pkgs)
 			if err != nil {
-				var unavail ErrToolUnavailable
-				if errors.As(err, &unavail) {
+				if _, ok := errors.AsType[ErrToolUnavailable](err); ok {
 					results[i] = StepResult{Name: step, Status: "unavailable", Detail: err.Error()}
 					failedIdx = i
 				} else {
@@ -116,8 +118,7 @@ func (e *Engine) Check(ctx context.Context, packages []string, fix bool) (*Check
 		case "staticcheck":
 			scResult, err := e.runStaticcheck(ctx, pkgs)
 			if err != nil {
-				var unavail ErrToolUnavailable
-				if errors.As(err, &unavail) {
+				if _, ok := errors.AsType[ErrToolUnavailable](err); ok {
 					results[i] = StepResult{Name: step, Status: "unavailable", Detail: err.Error()}
 					failedIdx = i
 				} else {
@@ -152,7 +153,7 @@ func (e *Engine) Check(ctx context.Context, packages []string, fix bool) (*Check
 // FirstLine returns the first non-empty line of s, trimmed,
 // skipping test framework boilerplate lines.
 func FirstLine(s string) string {
-	for _, line := range strings.Split(s, "\n") {
+	for line := range strings.SplitSeq(s, "\n") {
 		line = strings.TrimSpace(line)
 		if line != "" && !strings.HasPrefix(line, "=== RUN") && !strings.HasPrefix(line, "--- FAIL") {
 			return line
