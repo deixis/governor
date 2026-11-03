@@ -225,17 +225,32 @@ func TestGovInspect_MissingRunID(t *testing.T) {
 	}
 }
 
-func TestGovInspect_MissingSymbol(t *testing.T) {
-	dir := copyFixture(t, "passing")
-	cs := setup(t, dir, nil)
-	_, err := cs.CallTool(context.Background(), &mcp.CallToolParams{
-		Name: "gov_inspect",
-		Arguments: map[string]any{
-			"run_id": "some-id",
-		},
-	})
-	if err == nil {
-		t.Error("expected error for missing symbol")
+func TestGovInspect_NoSymbolReturnsAll(t *testing.T) {
+	dir := copyFixture(t, "failing")
+	cfg := &config.Config{
+		Check: config.CheckConfig{Steps: []string{"test"}},
+	}
+	cs := setup(t, dir, cfg)
+
+	valText := resultText(callTool(t, cs, "gov_check", nil))
+	var runID string
+	for line := range strings.SplitSeq(valText, "\n") {
+		if id, ok := strings.CutPrefix(line, "Run: "); ok {
+			runID = id
+			break
+		}
+	}
+	if runID == "" {
+		t.Fatalf("no Run ID found in check output:\n%s", valText)
+	}
+
+	res := callTool(t, cs, "gov_inspect", map[string]any{"run_id": runID})
+	text := resultText(res)
+	if res.IsError {
+		t.Fatalf("unexpected error from gov_inspect: %s", text)
+	}
+	if !strings.Contains(text, "all — ") || !strings.Contains(text, "[test]") {
+		t.Errorf("expected all diagnostics, got:\n%s", text)
 	}
 }
 
@@ -264,9 +279,9 @@ func TestGovInspect_AfterFailingCheck(t *testing.T) {
 
 	// Extract run ID from "Run: <id>".
 	var runID string
-	for _, line := range strings.Split(valText, "\n") {
-		if strings.HasPrefix(line, "Run: ") {
-			runID = strings.TrimPrefix(line, "Run: ")
+	for line := range strings.SplitSeq(valText, "\n") {
+		if after, ok := strings.CutPrefix(line, "Run: "); ok {
+			runID = after
 			break
 		}
 	}

@@ -102,9 +102,12 @@ func (e *Engine) Check(ctx context.Context, packages []string, fix bool) (*Check
 			} else if len(summary.Issues) > 0 {
 				results[i] = StepResult{Name: step, Status: "fail", Output: summary.String()}
 				failedIdx = i
+				dirs := e.packageDirs(ctx, pkgs)
 				for _, issue := range summary.Issues {
+					pkg, file := e.locate(dirs, issue.File)
 					rr.LintIssues = append(rr.LintIssues, report.LintIssue{
-						File:    issue.File,
+						Package: pkg,
+						File:    file,
 						Line:    issue.Line,
 						Col:     issue.Column,
 						Linter:  issue.Linter,
@@ -185,14 +188,10 @@ func FormatFailureSymbols(rr *report.RunResult) []string {
 
 	lintPkgs := make(map[string]int)
 	for _, li := range rr.LintIssues {
-		pkg := li.Package
-		if pkg == "" {
-			pkg = derivePackageFromFile(li.File)
-		}
-		lintPkgs[pkg]++
+		lintPkgs[li.Package]++
 	}
 	for pkg, count := range lintPkgs {
-		out = append(out, fmt.Sprintf("%s — %d lint issues", pkg, count))
+		out = append(out, fmt.Sprintf("%s — %d lint issues", packageLabel(pkg), count))
 	}
 
 	scPkgs := make(map[string]int)
@@ -200,8 +199,17 @@ func FormatFailureSymbols(rr *report.RunResult) []string {
 		scPkgs[si.Package]++
 	}
 	for pkg, count := range scPkgs {
-		out = append(out, fmt.Sprintf("%s — %d staticcheck issues", pkg, count))
+		out = append(out, fmt.Sprintf("%s — %d staticcheck issues", packageLabel(pkg), count))
 	}
 
 	return out
+}
+
+// packageLabel names a failure group. Diagnostics outside any workspace
+// package are reachable through gov_inspect without a symbol.
+func packageLabel(pkg string) string {
+	if pkg == "" {
+		return "(no package)"
+	}
+	return pkg
 }

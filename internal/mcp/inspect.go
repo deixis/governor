@@ -11,15 +11,12 @@ import (
 
 type inspectParams struct {
 	RunID  string `json:"run_id" jsonschema:"the run ID from a gov_check or gov_audit result"`
-	Symbol string `json:"symbol" jsonschema:"Go-qualified symbol: import path for package scope (e.g. example.com/foo), or importpath.Symbol for a specific function (e.g. example.com/foo.TestAdd)"`
+	Symbol string `json:"symbol,omitempty" jsonschema:"Go-qualified symbol: import path for package scope (e.g. example.com/foo), or importpath.Symbol for a specific function (e.g. example.com/foo.TestAdd). Omit for every diagnostic in the run, including those outside any package."`
 }
 
 func (h *handler) inspectHandler(ctx context.Context, req *mcp.CallToolRequest, params inspectParams) (*mcp.CallToolResult, any, error) {
 	if params.RunID == "" {
 		return errorResult("run_id is required")
-	}
-	if params.Symbol == "" {
-		return errorResult("symbol is required")
 	}
 
 	result, err := h.store.Load(params.RunID)
@@ -27,12 +24,19 @@ func (h *handler) inspectHandler(ctx context.Context, req *mcp.CallToolRequest, 
 		return errorResult(fmt.Sprintf("Failed to load run %s: %v", params.RunID, err))
 	}
 
-	diagnostics := report.BySymbol(result, params.Symbol)
+	var diagnostics []report.Diagnostic
+	scope := params.Symbol
+	if scope == "" {
+		diagnostics = report.All(result)
+		scope = "all"
+	} else {
+		diagnostics = report.BySymbol(result, params.Symbol)
+	}
 	if len(diagnostics) == 0 {
-		return textResult(fmt.Sprintf("No diagnostics found for %s in run %s (%s).", params.Symbol, params.RunID, result.Kind))
+		return textResult(fmt.Sprintf("No diagnostics found for %s in run %s (%s).", scope, params.RunID, result.Kind))
 	}
 
-	return textResult(formatInspectOutput(params.RunID, result.Kind, params.Symbol, diagnostics))
+	return textResult(formatInspectOutput(params.RunID, result.Kind, scope, diagnostics))
 }
 
 func formatInspectOutput(runID string, kind report.Kind, symbol string, diagnostics []report.Diagnostic) string {
@@ -104,7 +108,7 @@ func formatInspectOutput(runID string, kind report.Kind, symbol string, diagnost
 		if d.Source == "test" && d.Output != "" {
 			fmt.Fprintln(&b)
 			fmt.Fprintln(&b, "Output:")
-			for _, line := range strings.Split(strings.TrimRight(d.Output, "\n"), "\n") {
+			for line := range strings.SplitSeq(strings.TrimRight(d.Output, "\n"), "\n") {
 				fmt.Fprintf(&b, "    %s\n", line)
 			}
 		}

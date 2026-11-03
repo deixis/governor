@@ -54,7 +54,7 @@ func formatAudit(runID string, results []workflow.AuditStepResult) string {
 		}
 	}
 
-	fmt.Fprintf(&b, "Inspect with gov_inspect(run_id=%q, symbol=\"<package or package.Symbol>\").\n", runID)
+	fmt.Fprintf(&b, "Inspect with gov_inspect(run_id=%q, symbol=\"<package or package.Symbol>\"), or omit symbol for all.\n", runID)
 
 	return b.String()
 }

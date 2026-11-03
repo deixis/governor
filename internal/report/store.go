@@ -160,6 +160,12 @@ type Diagnostic struct {
 	Output  string // full test output (test failures only)
 }
 
+// All returns every diagnostic in the run, including those without a
+// package.
+func All(result *RunResult) []Diagnostic {
+	return toDiagnostics(result)
+}
+
 // ByPackage returns all diagnostics for a given package import path.
 func ByPackage(result *RunResult, pkg string) []Diagnostic {
 	var out []Diagnostic
