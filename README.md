@@ -38,7 +38,7 @@ Governor provides typed, bounded outcomes such as pass, fail, or unavailable, el
 Tests, lint, static analysis, and audits are first-class steps, not optional commands.
 
 **Unified execution and code intelligence**
-Execution and gopls-powered code intelligence are exposed through one interface.
+Execution and type-checker-backed code intelligence are exposed through one interface.
 
 **Improved agent efficiency**
 High-level semantic tools minimize redundant tool invocations, re-execution, and context-window clutter. This enables agents to retain more relevant information and achieve correct code more efficiently.*
@@ -53,9 +53,7 @@ Install Governor globally, like `gopls`:
 go install github.com/deixis/governor/cmd/governor@latest
 ```
 
-Requires Go 1.25 or later.
-
-It is optional but highly recommended to install `gopls`. When gopls is available, Governor proxies it as `gov_*` MCP tools. If gopls is not present, these tools return an error along with installation instructions.
+Requires Go 1.25 or later. Code intelligence runs in process on `go/packages` and `go/types`; no gopls install is needed.
 
 ## CLI usage
 
@@ -140,16 +138,46 @@ The working directory is set to the workspace root automatically.
 | `gov_inspect` | Inspect results from a previous run |
 | `gov_workspace` | Summarise the Go workspace |
 
-### Code intelligence (via gopls)
+### Code intelligence
+
+Backed by an in-process, cached `go/packages` load of the workspace. The first call after a source change reloads; later calls hit the cache.
 
 | Tool | Description |
 |---|---|
-| `gov_diagnostics` | Workspace diagnostics |
-| `gov_package_api` | Public API of packages |
+| `gov_diagnostics` | Parse, build and type errors |
+| `gov_package_api` | Exported API of packages in Go syntax |
 | `gov_search` | Fuzzy symbol search |
-| `gov_file_context` | Intra-package dependencies |
+| `gov_file_context` | Cross-file and cross-package dependencies of a file |
 | `gov_symbol_references` | Find symbol references |
-| `gov_rename_symbol` | Rename a symbol and return a diff |
+| `gov_definition` | Declaration site, signature and doc of a symbol |
+| `gov_implementations` | Interface satisfaction, both directions, type or method level |
+| `gov_callers` | Static call sites of a function with their enclosing function |
+| `gov_callees` | Calls made inside a function body |
+| `gov_outline` | Top-level declarations of a file or package with line ranges |
+| `gov_fix` | Repair imports, gofumpt, modernize rewrites, then diagnostics for the files |
+
+### Fix on every edit
+
+`governor fix <files>` runs the same pipeline as `gov_fix` from the shell. Agents tend to keep using their own edit tools, so the reliable way to run it after every edit is a hook in the editor or agent harness rather than an instruction the agent may skip. Pass the edited path as an argument, or pipe paths one per line with `-stdin`. Non-Go files are ignored, and `-q` prints nothing when a file needed no change and has no diagnostics, so the hook is silent unless something happened.
+
+```bash
+governor fix -q path/to/edited.go
+echo path/to/edited.go | governor fix -q -stdin
+```
+
+### Claude Code plugin
+
+`plugins/claude-code` packages the integration for Claude Code: it registers the MCP server, ships a skill describing when to use each `gov_*` tool, and adds a `PostToolUse` hook that runs `governor fix -q` on every edited `.go` file. Install the binary first, then the plugin:
+
+```bash
+go install github.com/deixis/governor/cmd/governor@latest
+```
+
+```
+/plugin install governor --marketplace deixis/governor
+```
+
+For local development of the plugin, start Claude Code with `claude --plugin-dir ./plugins/claude-code`.
 
 ## Configuration
 
