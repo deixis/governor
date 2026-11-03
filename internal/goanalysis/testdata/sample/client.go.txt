@@ -1,0 +1,22 @@
+package sample
+
+// Client talks to a Server.
+type Client struct {
+	srv *Server
+}
+
+// Dial connects to srv.
+func Dial(srv *Server) *Client {
+	srv.reset()
+	return &Client{srv: srv}
+}
+
+// Addr returns the server address.
+func (c *Client) Addr() string {
+	return c.srv.Addr
+}
+
+func init() {
+	_ = DefaultAddr
+	_ = version
+}

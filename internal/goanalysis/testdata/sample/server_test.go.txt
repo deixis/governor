@@ -1,0 +1,10 @@
+package sample
+
+import "testing"
+
+func TestServer(t *testing.T) {
+	s := NewServer(DefaultAddr)
+	if err := s.Start(); err != nil {
+		t.Fatal(err)
+	}
+}

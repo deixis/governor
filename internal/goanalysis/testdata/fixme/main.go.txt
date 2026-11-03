@@ -1,0 +1,27 @@
+package main
+
+import (
+	"os"
+	"strings"
+)
+
+func Names(items []string) []string {
+	var out []string
+	for i := 0; i < len(items); i++ {
+		out = append(out, strings.ToUpper(items[i]))
+	}
+	return out
+}
+
+func Has(items []string, want string) bool {
+	for _, it := range items {
+		if it == want {
+			return true
+		}
+	}
+	return false
+}
+
+func main() {
+	fmt.Println(Names([]string{"a"}), Has(nil, "x"))
+}
