@@ -21,8 +21,14 @@ func (e *Engine) runDupl(ctx context.Context, packages []string) ([]report.Dupli
 	argv = append(argv, e.Config.Audit.Dupl.Args...)
 
 	// dupl operates on file paths, not import paths.
-	// Pass "." to scan the workspace.
-	argv = append(argv, ".")
+	files, err := e.PackageFiles(ctx, e.ResolvePackages(packages))
+	if err != nil {
+		return nil, err
+	}
+	if len(files) == 0 {
+		return nil, nil
+	}
+	argv = append(argv, files...)
 
 	result, err := e.Runner.Run(ctx, argv, "")
 	if err != nil {

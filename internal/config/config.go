@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -22,6 +23,7 @@ type Config struct {
 	Version      int               `yaml:"version"`
 	RawTimeout   string            `yaml:"timeout"`    // e.g. "5m", "30s"
 	RawMaxOutput int               `yaml:"max_output"` // bytes
+	Exclude      []string          `yaml:"exclude"`    // package patterns left out of every run (e.g. ./e2e/...)
 	Test         TestConfig        `yaml:"test"`
 	Lint         LintConfig        `yaml:"lint"`
 	Staticcheck  StaticcheckConfig `yaml:"staticcheck"`
@@ -142,9 +144,14 @@ type LoadResult struct {
 	RepoRoot string // directory containing go.mod; falls back to workspace
 }
 
-// Load reads the .governor file from the repository root.
-// The repository root is discovered by walking upward from workspace
-// looking for go.mod. If no .governor file exists, a default Config is returned.
+// FileNames lists the accepted config file names, in lookup order.
+var FileNames = []string{".governor", ".governor.yaml", ".governor.yml"}
+
+// Load reads the config file from the repository root. The repository
+// root is discovered by walking upward from workspace looking for go.mod.
+// Any name in FileNames is accepted; more than one present is an error,
+// since a silently ignored file is worse than no file. With no file, a
+// default Config is returned.
 func Load(workspace string) (*LoadResult, error) {
 	root, err := findRepoRoot(workspace)
 	if err != nil {
@@ -152,18 +159,29 @@ func Load(workspace string) (*LoadResult, error) {
 		root = workspace
 	}
 
-	path := filepath.Join(root, ".governor")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &LoadResult{Config: &Config{}, RepoRoot: root}, nil
+	var found []string
+	for _, name := range FileNames {
+		if _, err := os.Stat(filepath.Join(root, name)); err == nil {
+			found = append(found, name)
 		}
-		return nil, fmt.Errorf("reading .governor: %w", err)
+	}
+	switch len(found) {
+	case 0:
+		return &LoadResult{Config: &Config{}, RepoRoot: root}, nil
+	case 1:
+	default:
+		return nil, fmt.Errorf("multiple config files in %s: %s; keep one", root, strings.Join(found, ", "))
+	}
+
+	name := found[0]
+	data, err := os.ReadFile(filepath.Join(root, name))
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", name, err)
 	}
 
 	cfg := &Config{}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("parsing .governor: %w", err)
+		return nil, fmt.Errorf("parsing %s: %w", name, err)
 	}
 	return &LoadResult{Config: cfg, RepoRoot: root}, nil
 }

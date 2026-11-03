@@ -19,7 +19,7 @@ func (h *handler) diagnosticsHandler(ctx context.Context, _ *sdkmcp.CallToolRequ
 	if err != nil {
 		return errorResult(fmt.Sprintf("diagnostics failed: %v", err))
 	}
-	return textResult(analysis.FormatDiagnostics(diags))
+	return textResult(analysis.FormatDiagnostics(diags, h.engine.Config.MaxOutputBytes()))
 }
 
 type packageAPIParams struct {

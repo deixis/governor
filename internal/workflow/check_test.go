@@ -79,6 +79,7 @@ func TestCheck_GofumptFailureIsAnError(t *testing.T) {
 	shimOut := "No version is set for command gofumpt\nConsider adding one of the following versions in your config file at .tool-versions\ngofumpt 0.7.0\ngofumpt 0.11.0\n"
 	fr := &fakeRunner{
 		Results: map[string]*runner.Result{
+			"go list":       {ExitCode: 0, Stdout: []byte("/project/a.go\n")},
 			"/stub/gofumpt": {ExitCode: 126, Stderr: []byte(shimOut)},
 		},
 	}
@@ -96,6 +97,91 @@ func TestCheck_GofumptFailureIsAnError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "gofumpt failed (exit 126)") || !strings.Contains(err.Error(), "No version is set") {
 		t.Errorf("error = %q, want gofumpt failure with shim output", err)
+	}
+}
+
+// argvRunner answers by full argv, for tests that must tell two `go list`
+// invocations apart.
+type argvRunner struct {
+	calls   [][]string
+	results map[string]*runner.Result
+}
+
+func (a *argvRunner) Run(_ context.Context, argv []string, _ string) (*runner.Result, error) {
+	a.calls = append(a.calls, argv)
+	if r, ok := a.results[strings.Join(argv, " ")]; ok {
+		return r, nil
+	}
+	return &runner.Result{ExitCode: 0}, nil
+}
+
+func TestPackages_Exclude(t *testing.T) {
+	ar := &argvRunner{results: map[string]*runner.Result{
+		"go list -f {{.ImportPath}} ./...":     {Stdout: []byte("example.com/m/a\nexample.com/m/e2e\nexample.com/m/e2e/sub\n")},
+		"go list -f {{.ImportPath}} ./e2e/...": {Stdout: []byte("example.com/m/e2e\nexample.com/m/e2e/sub\n")},
+	}}
+	e := &Engine{
+		Config:    &config.Config{Exclude: []string{"./e2e/..."}},
+		Runner:    ar,
+		Workspace: "/project",
+		RepoRoot:  "/project",
+	}
+
+	got, err := e.Packages(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "example.com/m/a" {
+		t.Errorf("Packages = %v, want [example.com/m/a]", got)
+	}
+}
+
+func TestPackages_NoExcludePassesThrough(t *testing.T) {
+	ar := &argvRunner{}
+	e := &Engine{Config: &config.Config{}, Runner: ar, Workspace: "/project", RepoRoot: "/project"}
+
+	got, err := e.Packages(context.Background(), []string{"./pkg/..."})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "./pkg/..." {
+		t.Errorf("Packages = %v, want [./pkg/...]", got)
+	}
+	if len(ar.calls) != 0 {
+		t.Errorf("go list called %d times, want 0", len(ar.calls))
+	}
+}
+
+func TestCheck_GofumptCoversPackageFilesOnly(t *testing.T) {
+	// Formatting must run on the files go list reports for the selected
+	// packages, not on ".", which would sweep worktrees and vendored
+	// copies under the workspace.
+	ar := &argvRunner{results: map[string]*runner.Result{
+		"go list -f " + goFilesTemplate + " ./...":          {Stdout: []byte("/project/a.go\n/project/a_test.go\n")},
+		"/stub/gofumpt -l /project/a.go /project/a_test.go": {Stdout: []byte("/project/a.go\n")},
+	}}
+	e := &Engine{
+		Config:       &config.Config{Check: config.CheckConfig{Steps: []string{"test"}}},
+		Runner:       ar,
+		Workspace:    "/project",
+		RepoRoot:     "/project",
+		ToolResolver: func(name string) []string { return []string{"/stub/" + name} },
+	}
+
+	result, err := e.Check(context.Background(), nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if result.FailedIdx != -2 {
+		t.Errorf("FailedIdx = %d, want -2 (format failure)", result.FailedIdx)
+	}
+	if n := len(result.RunResult.FormatIssues); n != 1 || result.RunResult.FormatIssues[0].File != "a.go" {
+		t.Errorf("FormatIssues = %+v, want one issue for a.go", result.RunResult.FormatIssues)
+	}
+	for _, call := range ar.calls {
+		if strings.HasSuffix(call[0], "gofumpt") && call[len(call)-1] == "." {
+			t.Errorf("gofumpt ran on '.': %v", call)
+		}
 	}
 }
 

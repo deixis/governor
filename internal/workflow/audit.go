@@ -27,7 +27,10 @@ type AuditStepResult struct {
 // dupl, vulncheck) without stopping on failure.
 func (e *Engine) Audit(ctx context.Context, packages []string) (*AuditResult, error) {
 	runID := uuid.New().String()
-	pkgs := e.ResolvePackages(packages)
+	pkgs, err := e.Packages(ctx, packages)
+	if err != nil {
+		return nil, err
+	}
 
 	rr := &report.RunResult{ID: runID, Kind: report.Audit}
 

@@ -191,12 +191,16 @@ For local development of the plugin, start Claude Code with `claude --plugin-dir
 
 ## Configuration
 
-Governor can read optional configuration settings from a `.governor` YAML file located at the repository root.
+Governor can read optional configuration settings from a `.governor`, `.governor.yaml` or `.governor.yml` file located at the repository root. Keep one; several is an error.
 
 ```yaml
 version: 1
 timeout: 5m
 max_output: 1048576
+
+# Package patterns left out of every check and audit run, formatting
+# included. Use it for suites that need external services.
+exclude: ["./e2e/..."]
 
 test:
   args: ["-race", "-count=1"]
