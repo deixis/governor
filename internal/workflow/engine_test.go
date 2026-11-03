@@ -109,6 +109,14 @@ func TestHasModuleTool(t *testing.T) {
 			t.Errorf("hasModuleTool(%q) = %v, want %v", c.name, got, c.want)
 		}
 	}
+
+	// Go 1.27 prints "name (import/path)".
+	out127 := "asm\nvet\ngopls (golang.org/x/tools/gopls)\nstaticcheck (honnef.co/go/tools/cmd/staticcheck)\n"
+	for _, c := range cases {
+		if got := hasModuleTool(out127, c.name); got != c.want {
+			t.Errorf("hasModuleTool(go1.27 output, %q) = %v, want %v", c.name, got, c.want)
+		}
+	}
 }
 
 func TestResolveTool_MissingNotResolvedViaGoTool(t *testing.T) {

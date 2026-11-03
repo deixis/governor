@@ -12,6 +12,7 @@ import (
 	"strings"
 
 	"github.com/deixis/governor/internal/config"
+	"github.com/deixis/governor/internal/gotool"
 	"github.com/deixis/governor/internal/runner"
 )
 
@@ -196,16 +197,11 @@ func ResolveTool(dir, name string) []string {
 }
 
 // hasModuleTool reports whether the output of `go tool` lists name as a
-// module tool directive. Built-in tools (vet, cover, ...) are listed by
-// bare name, module tools by import path; only the latter are invocable
-// as third-party tools, so a bare-name match is ignored.
+// module tool directive. Built-in tools (vet, cover, ...) are not module
+// tools and never match, so a name like "vet" falls through to PATH.
 func hasModuleTool(goToolOutput, name string) bool {
-	for line := range strings.SplitSeq(goToolOutput, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.Contains(line, "/") {
-			continue
-		}
-		if path.Base(line) == name {
+	for _, importPath := range gotool.ModuleTools(goToolOutput) {
+		if path.Base(importPath) == name {
 			return true
 		}
 	}

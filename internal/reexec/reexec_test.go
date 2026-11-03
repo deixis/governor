@@ -43,6 +43,7 @@ func TestHasToolDirective(t *testing.T) {
 	}{
 		{ImportPath + "\n", true},
 		{"vet\n  " + ImportPath + "  \n", true},
+		{"vet\ngovernor (" + ImportPath + ")\n", true}, // Go 1.27 form
 		{"vet\ncover\n", false},
 		{"github.com/deixis/governor\n", false},     // root package, not the command
 		{ImportPath + "/v2\n", false},               // different module
