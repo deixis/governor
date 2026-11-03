@@ -43,22 +43,18 @@ func TestAudit_StepError_NoFailFast(t *testing.T) {
 			"go test": {ExitCode: 0},
 			"go tool": {ExitCode: 0, Stdout: []byte("example.com/foo/bar.go:12:\tFuncA\t\t75.0%\n")},
 		},
-		Err: map[string]error{
-			// gocognit will fail because resolveTool returns nil in test.
-			// But we can make go test fail for coverage to test the pattern.
-		},
 	}
 
-	// Use steps where the tool won't be found (gocognit, deadcode).
-	// resolveTool will return nil for these in a test environment,
-	// producing ErrToolUnavailable.
+	// complexity needs gocognit; the stub resolver reports it missing,
+	// producing ErrToolUnavailable. coverage uses go directly and runs.
 	e := &Engine{
 		Config: &config.Config{Audit: config.AuditConfig{
 			Steps: []string{"complexity", "coverage"},
 		}},
-		Runner:    fr,
-		Workspace: "/project",
-		RepoRoot:  "/project",
+		Runner:       fr,
+		Workspace:    "/project",
+		RepoRoot:     "/project",
+		ToolResolver: noTools,
 	}
 
 	result, err := e.Audit(context.Background(), nil)
@@ -89,9 +85,10 @@ func TestAudit_MultipleErrors(t *testing.T) {
 		Config: &config.Config{Audit: config.AuditConfig{
 			Steps: []string{"coverage", "complexity"},
 		}},
-		Runner:    fr,
-		Workspace: "/project",
-		RepoRoot:  "/project",
+		Runner:       fr,
+		Workspace:    "/project",
+		RepoRoot:     "/project",
+		ToolResolver: noTools,
 	}
 
 	result, err := e.Audit(context.Background(), nil)

@@ -32,7 +32,7 @@ func (s *StaticcheckResult) String() string {
 }
 
 func (e *Engine) runStaticcheck(ctx context.Context, packages []string) (*StaticcheckResult, error) {
-	argv := ResolveTool("staticcheck")
+	argv := e.resolveTool("staticcheck")
 	if argv == nil {
 		return nil, NewErrToolUnavailable("staticcheck")
 	}

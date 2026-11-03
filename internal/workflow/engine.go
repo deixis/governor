@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"strings"
 
@@ -26,6 +27,20 @@ type Engine struct {
 	Runner    CommandRunner
 	Workspace string // cwd — commands run from here, ./... scopes to here
 	RepoRoot  string // module root — used for absolute-path resolution
+
+	// ToolResolver maps a tool name to the argv prefix that invokes it,
+	// or nil when unavailable. Defaults to ResolveTool in Workspace.
+	// Tests inject a stub so results do not depend on the host PATH.
+	ToolResolver func(name string) []string
+}
+
+// resolveTool returns the argv prefix for name using ToolResolver, or
+// ResolveTool against the workspace when none is set.
+func (e *Engine) resolveTool(name string) []string {
+	if e.ToolResolver != nil {
+		return e.ToolResolver(name)
+	}
+	return ResolveTool(e.Workspace, name)
 }
 
 // ResolvePackages normalises package arguments so that tools work
@@ -76,33 +91,43 @@ func (e *Engine) ResolvePackages(packages []string) []string {
 	return resolved
 }
 
-// ResolveTool returns the argv prefix for invoking a named tool.
-// It checks "go tool <name>" first (Go 1.24+ tool directive in go.mod),
-// then falls back to exec.LookPath on the system PATH.
-// Returns nil if the tool is not available.
-func ResolveTool(name string) []string {
-	// Check if the tool is available via "go tool".
-	goPath, err := exec.LookPath("go")
-	if err == nil {
-		// Probe with -h; exit code 0 or 2 (flag help) both indicate the tool exists.
-		cmd := exec.Command(goPath, "tool", name, "-h")
-		if err := cmd.Run(); err == nil {
-			return []string{goPath, "tool", name}
-		}
-		// Some tools exit non-zero for -h but still exist. Check the specific
-		// exit code — exec.ExitError with a code means the binary ran.
-		if exitErr, ok := err.(*exec.ExitError); ok && exitErr.ExitCode() != 0 {
+// ResolveTool returns the argv prefix for invoking a named tool from dir.
+// It checks the module's tool directives first (Go 1.24+, listed by
+// `go tool` with no arguments), then falls back to exec.LookPath on the
+// system PATH. Returns nil if the tool is not available.
+//
+// Probing with `go tool <name> -h` cannot work: a missing tool and a
+// present tool's help both exit non-zero.
+func ResolveTool(dir, name string) []string {
+	if goPath, err := exec.LookPath("go"); err == nil {
+		cmd := exec.Command(goPath, "tool")
+		cmd.Dir = dir
+		if out, err := cmd.Output(); err == nil && hasModuleTool(string(out), name) {
 			return []string{goPath, "tool", name}
 		}
 	}
 
-	// Fallback to PATH lookup.
-	toolPath, err := exec.LookPath(name)
-	if err == nil {
+	if toolPath, err := exec.LookPath(name); err == nil {
 		return []string{toolPath}
 	}
-
 	return nil
+}
+
+// hasModuleTool reports whether the output of `go tool` lists name as a
+// module tool directive. Built-in tools (vet, cover, ...) are listed by
+// bare name, module tools by import path; only the latter are invocable
+// as third-party tools, so a bare-name match is ignored.
+func hasModuleTool(goToolOutput, name string) bool {
+	for line := range strings.SplitSeq(goToolOutput, "\n") {
+		line = strings.TrimSpace(line)
+		if !strings.Contains(line, "/") {
+			continue
+		}
+		if path.Base(line) == name {
+			return true
+		}
+	}
+	return false
 }
 
 // toolInfo holds install metadata for a known tool.
@@ -124,7 +149,6 @@ var knownTools = map[string]toolInfo{
 	"dupl":          {ImportPath: "github.com/mibk/dupl@latest"},
 	"govulncheck":   {ImportPath: "golang.org/x/vuln/cmd/govulncheck@latest"},
 	"golangci-lint": {AltInstall: "https://golangci-lint.run/welcome/install/", NoGoInstall: true},
-	"gopls":         {ImportPath: "golang.org/x/tools/gopls@latest"},
 }
 
 // ErrToolUnavailable is returned when a required tool is not installed.

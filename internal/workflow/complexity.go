@@ -10,7 +10,7 @@ import (
 )
 
 func (e *Engine) runComplexity(ctx context.Context, packages []string) ([]report.ComplexityEntry, error) {
-	argv := ResolveTool("gocognit")
+	argv := e.resolveTool("gocognit")
 	if argv == nil {
 		return nil, NewErrToolUnavailable("gocognit")
 	}
