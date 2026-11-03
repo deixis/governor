@@ -44,7 +44,10 @@ func (e *Engine) runLint(ctx context.Context, packages []string) (*LintSummary, 
 		return nil, NewErrToolUnavailable("golangci-lint")
 	}
 
-	pkgs := e.ResolvePackages(packages)
+	pkgs, err := e.Packages(ctx, packages, e.Config.Lint.Exclude)
+	if err != nil {
+		return nil, err
+	}
 
 	argv = append(argv, "run", "--out-format", "json")
 	if e.Config.Lint.Config != "" {

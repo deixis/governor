@@ -120,14 +120,9 @@ func TestPackages_Exclude(t *testing.T) {
 		"go list -f {{.ImportPath}} ./...":     {Stdout: []byte("example.com/m/a\nexample.com/m/e2e\nexample.com/m/e2e/sub\n")},
 		"go list -f {{.ImportPath}} ./e2e/...": {Stdout: []byte("example.com/m/e2e\nexample.com/m/e2e/sub\n")},
 	}}
-	e := &Engine{
-		Config:    &config.Config{Exclude: []string{"./e2e/..."}},
-		Runner:    ar,
-		Workspace: "/project",
-		RepoRoot:  "/project",
-	}
+	e := &Engine{Config: &config.Config{}, Runner: ar, Workspace: "/project", RepoRoot: "/project"}
 
-	got, err := e.Packages(context.Background(), nil)
+	got, err := e.Packages(context.Background(), nil, []string{"./e2e/..."})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -140,7 +135,7 @@ func TestPackages_NoExcludePassesThrough(t *testing.T) {
 	ar := &argvRunner{}
 	e := &Engine{Config: &config.Config{}, Runner: ar, Workspace: "/project", RepoRoot: "/project"}
 
-	got, err := e.Packages(context.Background(), []string{"./pkg/..."})
+	got, err := e.Packages(context.Background(), []string{"./pkg/..."}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -149,6 +144,43 @@ func TestPackages_NoExcludePassesThrough(t *testing.T) {
 	}
 	if len(ar.calls) != 0 {
 		t.Errorf("go list called %d times, want 0", len(ar.calls))
+	}
+}
+
+func TestCheck_TestExcludeAppliesToTestStepOnly(t *testing.T) {
+	ar := &argvRunner{results: map[string]*runner.Result{
+		"go list -f {{.ImportPath}} ./...":     {Stdout: []byte("example.com/m/a\nexample.com/m/e2e\n")},
+		"go list -f {{.ImportPath}} ./e2e/...": {Stdout: []byte("example.com/m/e2e\n")},
+		"go test -json example.com/m/a":        {Stdout: passingTestJSON()},
+	}}
+	e := &Engine{
+		Config: &config.Config{
+			Test:  config.TestConfig{Exclude: []string{"./e2e/..."}},
+			Check: config.CheckConfig{Steps: []string{"test", "staticcheck"}},
+		},
+		Runner:       ar,
+		Workspace:    "/project",
+		RepoRoot:     "/project",
+		ToolResolver: func(name string) []string { return []string{"/stub/" + name} },
+	}
+
+	if _, err := e.Check(context.Background(), nil, false); err != nil {
+		t.Fatal(err)
+	}
+	var test, staticcheck []string
+	for _, call := range ar.calls {
+		switch {
+		case call[0] == "go" && call[1] == "test":
+			test = call
+		case strings.HasSuffix(call[0], "staticcheck"):
+			staticcheck = call
+		}
+	}
+	if test == nil || test[len(test)-1] != "example.com/m/a" {
+		t.Errorf("go test ran on %v, want example.com/m/a only", test)
+	}
+	if staticcheck == nil || staticcheck[len(staticcheck)-1] != "./..." {
+		t.Errorf("staticcheck ran on %v, want ./... (no exclude configured)", staticcheck)
 	}
 }
 

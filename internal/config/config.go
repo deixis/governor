@@ -23,7 +23,6 @@ type Config struct {
 	Version      int               `yaml:"version"`
 	RawTimeout   string            `yaml:"timeout"`    // e.g. "5m", "30s"
 	RawMaxOutput int               `yaml:"max_output"` // bytes
-	Exclude      []string          `yaml:"exclude"`    // package patterns left out of every run (e.g. ./e2e/...)
 	Test         TestConfig        `yaml:"test"`
 	Lint         LintConfig        `yaml:"lint"`
 	Staticcheck  StaticcheckConfig `yaml:"staticcheck"`
@@ -50,15 +49,20 @@ func (c *Config) MaxOutputBytes() int {
 	return DefaultMaxOutput
 }
 
+// Every step takes an Exclude list: package patterns (e.g. ./e2e/...)
+// subtracted from the selection for that step only.
+
 // TestConfig controls how gov_test is executed.
 type TestConfig struct {
-	Args []string `yaml:"args"` // extra flags appended to go test -json (e.g. -race, -count=1)
+	Args    []string `yaml:"args"` // extra flags appended to go test -json (e.g. -race, -count=1)
+	Exclude []string `yaml:"exclude"`
 }
 
 // LintConfig controls how gov_lint is executed.
 type LintConfig struct {
-	Config string   `yaml:"config"` // path to golangci-lint config file
-	Args   []string `yaml:"args"`   // extra flags (e.g. --timeout=5m)
+	Config  string   `yaml:"config"` // path to golangci-lint config file
+	Args    []string `yaml:"args"`   // extra flags (e.g. --timeout=5m)
+	Exclude []string `yaml:"exclude"`
 }
 
 // CheckConfig defines the steps for gov_check.
@@ -68,8 +72,9 @@ type CheckConfig struct {
 
 // StaticcheckConfig controls how staticcheck is executed.
 type StaticcheckConfig struct {
-	Checks []string `yaml:"checks"` // e.g. ["all", "-ST1000"]
-	Args   []string `yaml:"args"`   // extra flags
+	Checks  []string `yaml:"checks"` // e.g. ["all", "-ST1000"]
+	Args    []string `yaml:"args"`   // extra flags
+	Exclude []string `yaml:"exclude"`
 }
 
 // AuditConfig defines the steps and per-check settings for gov_audit.
@@ -84,28 +89,33 @@ type AuditConfig struct {
 
 // VulncheckConfig controls how govulncheck is executed.
 type VulncheckConfig struct {
-	Args []string `yaml:"args"` // extra flags for govulncheck
+	Args    []string `yaml:"args"` // extra flags for govulncheck
+	Exclude []string `yaml:"exclude"`
 }
 
 // CoverageConfig controls how test coverage is collected.
 type CoverageConfig struct {
-	Args []string `yaml:"args"` // extra flags for go test -coverprofile
+	Args    []string `yaml:"args"` // extra flags for go test -coverprofile
+	Exclude []string `yaml:"exclude"`
 }
 
 // ComplexityConfig controls how cognitive complexity is measured.
 type ComplexityConfig struct {
-	Args []string `yaml:"args"` // extra flags for gocognit
+	Args    []string `yaml:"args"` // extra flags for gocognit
+	Exclude []string `yaml:"exclude"`
 }
 
 // DeadcodeConfig controls how dead code detection is run.
 type DeadcodeConfig struct {
-	Args []string `yaml:"args"` // extra flags for deadcode
+	Args    []string `yaml:"args"` // extra flags for deadcode
+	Exclude []string `yaml:"exclude"`
 }
 
 // DuplConfig controls how duplicate code detection is run.
 type DuplConfig struct {
 	Threshold int      `yaml:"threshold"` // minimum token length (default: 50)
 	Args      []string `yaml:"args"`      // extra flags for dupl
+	Exclude   []string `yaml:"exclude"`
 }
 
 // DefaultCheckSteps are used when no steps are configured.

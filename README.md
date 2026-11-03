@@ -198,12 +198,11 @@ version: 1
 timeout: 5m
 max_output: 1048576
 
-# Package patterns left out of every check and audit run, formatting
-# included. Use it for suites that need external services.
-exclude: ["./e2e/..."]
-
 test:
   args: ["-race", "-count=1"]
+  # Package patterns left out of this step. Every step (test, lint,
+  # staticcheck, and each audit check) takes its own exclude list.
+  exclude: ["./e2e/scenario/..."]
 
 lint:
   config: .golangci.yml

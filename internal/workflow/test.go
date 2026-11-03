@@ -52,7 +52,7 @@ func (s *TestSummary) String() string {
 			for _, be := range s.BuildErrors {
 				fmt.Fprintf(&b, "  %s:\n", be.ImportPath)
 				output := truncateLines(be.Output, maxFailureLines)
-				for _, line := range strings.Split(output, "\n") {
+				for line := range strings.SplitSeq(output, "\n") {
 					fmt.Fprintf(&b, "    %s\n", line)
 				}
 			}
@@ -73,7 +73,7 @@ func (s *TestSummary) String() string {
 					output := truncateLines(f.Output, maxFailureLines)
 					fmt.Fprintf(&b, "  - %s\n", f.Test)
 					if output != "" {
-						for _, line := range strings.Split(output, "\n") {
+						for line := range strings.SplitSeq(output, "\n") {
 							fmt.Fprintf(&b, "      %s\n", line)
 						}
 					}
@@ -90,7 +90,10 @@ func (s *TestSummary) String() string {
 }
 
 func (e *Engine) runTest(ctx context.Context, packages []string) (*TestSummary, error) {
-	pkgs := e.ResolvePackages(packages)
+	pkgs, err := e.Packages(ctx, packages, e.Config.Test.Exclude)
+	if err != nil {
+		return nil, err
+	}
 
 	argv := []string{"go", "test", "-json"}
 	argv = append(argv, pkgs...)
@@ -125,8 +128,8 @@ func parseTestOutput(data []byte) *TestSummary {
 	buildOutputs := make(map[string]*strings.Builder)
 	failedBuilds := make(map[string]bool)
 
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(string(data), "\n")
+	for line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue

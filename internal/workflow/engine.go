@@ -92,13 +92,13 @@ func (e *Engine) ResolvePackages(packages []string) []string {
 }
 
 // Packages resolves package arguments like ResolvePackages and then
-// applies the configured exclude patterns. Without excludes the patterns
-// pass through untouched. With excludes both sides are expanded through
-// `go list`, and the result is the explicit import paths that remain, so
-// every tool downstream sees the same scope.
-func (e *Engine) Packages(ctx context.Context, packages []string) ([]string, error) {
+// subtracts the exclude patterns, which come from the calling step's
+// config. Without excludes the patterns pass through untouched. With
+// excludes both sides are expanded through `go list`, and the result is
+// the explicit import paths that remain.
+func (e *Engine) Packages(ctx context.Context, packages, exclude []string) ([]string, error) {
 	pkgs := e.ResolvePackages(packages)
-	if len(e.Config.Exclude) == 0 {
+	if len(exclude) == 0 {
 		return pkgs, nil
 	}
 
@@ -106,7 +106,7 @@ func (e *Engine) Packages(ctx context.Context, packages []string) ([]string, err
 	if err != nil {
 		return nil, err
 	}
-	excluded, err := e.listImportPaths(ctx, e.Config.Exclude)
+	excluded, err := e.listImportPaths(ctx, exclude)
 	if err != nil {
 		return nil, err
 	}
@@ -121,7 +121,7 @@ func (e *Engine) Packages(ctx context.Context, packages []string) ([]string, err
 		}
 	}
 	if len(kept) == 0 {
-		return nil, fmt.Errorf("no packages left after exclude %v", e.Config.Exclude)
+		return nil, fmt.Errorf("no packages left after exclude %v", exclude)
 	}
 	return kept, nil
 }

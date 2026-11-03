@@ -78,7 +78,7 @@ func TestLoad_YAMLSuffix(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/test\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(dir, ".governor.yaml"), []byte("timeout: 2m\nexclude: [\"./e2e/...\"]\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(dir, ".governor.yaml"), []byte("timeout: 2m\ntest:\n  exclude: [\"./e2e/...\"]\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -89,8 +89,8 @@ func TestLoad_YAMLSuffix(t *testing.T) {
 	if got := res.Config.RawTimeout; got != "2m" {
 		t.Errorf("RawTimeout = %q, want 2m", got)
 	}
-	if got := res.Config.Exclude; len(got) != 1 || got[0] != "./e2e/..." {
-		t.Errorf("Exclude = %v, want [./e2e/...]", got)
+	if got := res.Config.Test.Exclude; len(got) != 1 || got[0] != "./e2e/..." {
+		t.Errorf("Test.Exclude = %v, want [./e2e/...]", got)
 	}
 }
 

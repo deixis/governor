@@ -21,7 +21,11 @@ func (e *Engine) runDupl(ctx context.Context, packages []string) ([]report.Dupli
 	argv = append(argv, e.Config.Audit.Dupl.Args...)
 
 	// dupl operates on file paths, not import paths.
-	files, err := e.PackageFiles(ctx, e.ResolvePackages(packages))
+	pkgs, err := e.Packages(ctx, packages, e.Config.Audit.Dupl.Exclude)
+	if err != nil {
+		return nil, err
+	}
+	files, err := e.PackageFiles(ctx, pkgs)
 	if err != nil {
 		return nil, err
 	}

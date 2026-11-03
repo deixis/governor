@@ -15,7 +15,10 @@ func (e *Engine) runComplexity(ctx context.Context, packages []string) ([]report
 		return nil, NewErrToolUnavailable("gocognit")
 	}
 
-	pkgs := e.ResolvePackages(packages)
+	pkgs, err := e.Packages(ctx, packages, e.Config.Audit.Complexity.Exclude)
+	if err != nil {
+		return nil, err
+	}
 
 	argv = append(argv, e.Config.Audit.Complexity.Args...)
 	argv = append(argv, pkgs...)
@@ -34,7 +37,7 @@ func (e *Engine) runComplexity(ctx context.Context, packages []string) ([]report
 func parseGocognitOutput(data []byte) []report.ComplexityEntry {
 	var entries []report.ComplexityEntry
 
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue

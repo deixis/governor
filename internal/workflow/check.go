@@ -30,10 +30,7 @@ type StepResult struct {
 // stopping on first failure.
 func (e *Engine) Check(ctx context.Context, packages []string, fix bool) (*CheckResult, error) {
 	runID := uuid.New().String()
-	pkgs, err := e.Packages(ctx, packages)
-	if err != nil {
-		return nil, err
-	}
+	pkgs := e.ResolvePackages(packages)
 
 	rr := &report.RunResult{ID: runID, Kind: report.Check}
 

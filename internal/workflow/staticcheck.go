@@ -43,7 +43,11 @@ func (e *Engine) runStaticcheck(ctx context.Context, packages []string) (*Static
 		argv = append(argv, "-checks", strings.Join(e.Config.Staticcheck.Checks, ","))
 	}
 	argv = append(argv, e.Config.Staticcheck.Args...)
-	argv = append(argv, packages...)
+	pkgs, err := e.Packages(ctx, packages, e.Config.Staticcheck.Exclude)
+	if err != nil {
+		return nil, err
+	}
+	argv = append(argv, pkgs...)
 
 	result, err := e.Runner.Run(ctx, argv, "")
 	if err != nil {
@@ -70,8 +74,8 @@ type staticcheckLocation struct {
 
 func parseStaticcheckOutput(data []byte) *StaticcheckResult {
 	s := &StaticcheckResult{}
-	lines := strings.Split(string(data), "\n")
-	for _, line := range lines {
+	lines := strings.SplitSeq(string(data), "\n")
+	for line := range lines {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue

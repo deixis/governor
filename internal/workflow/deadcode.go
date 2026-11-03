@@ -16,7 +16,10 @@ func (e *Engine) runDeadcode(ctx context.Context, packages []string) ([]report.D
 		return nil, NewErrToolUnavailable("deadcode")
 	}
 
-	pkgs := e.ResolvePackages(packages)
+	pkgs, err := e.Packages(ctx, packages, e.Config.Audit.Deadcode.Exclude)
+	if err != nil {
+		return nil, err
+	}
 
 	argv = append(argv, "-json")
 	argv = append(argv, e.Config.Audit.Deadcode.Args...)
