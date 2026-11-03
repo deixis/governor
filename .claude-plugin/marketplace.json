@@ -1,0 +1,16 @@
+{
+  "name": "governor",
+  "owner": {
+    "name": "deixis"
+  },
+  "metadata": {
+    "description": "Governor: Go code intelligence, fix-on-edit and check pipeline for coding agents."
+  },
+  "plugins": [
+    {
+      "name": "governor",
+      "source": "./plugins/claude-code",
+      "description": "Governor MCP server plus a PostToolUse hook that runs governor fix on every edited Go file."
+    }
+  ]
+}
