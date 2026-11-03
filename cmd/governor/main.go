@@ -4,8 +4,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -117,7 +119,14 @@ func serve(ctx context.Context, httpAddr string) error {
 	if httpAddr != "" {
 		return serveHTTP(ctx, server, httpAddr)
 	}
-	return server.Run(ctx, &mcpsdk.StdioTransport{})
+	// Hold stdin EOF until pending responses are written: a client that
+	// sends a request and closes its end must still get the reply.
+	err = server.Run(ctx, govmcp.NewDrainingTransport(&mcpsdk.StdioTransport{}, govmcp.DefaultDrainTimeout))
+	if errors.Is(err, io.EOF) {
+		// Client closed stdin: normal shutdown, not a failure.
+		return nil
+	}
+	return err
 }
 
 func serveHTTP(ctx context.Context, server *mcpsdk.Server, addr string) error {
