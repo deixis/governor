@@ -91,26 +91,6 @@ func TestResolvePackages_RepoRootFallback(t *testing.T) {
 // do not depend on what is installed on the host.
 func noTools(string) []string { return nil }
 
-func TestHasModuleTool(t *testing.T) {
-	out := "asm\ncgo\ncompile\ncover\nvet\ngolang.org/x/tools/gopls\nhonnef.co/go/tools/cmd/staticcheck\n"
-	cases := []struct {
-		name string
-		want bool
-	}{
-		{"gopls", true},
-		{"staticcheck", true},
-		{"vet", false},   // built-in, not a module tool
-		{"cover", false}, // built-in
-		{"gocognit", false},
-		{"", false},
-	}
-	for _, c := range cases {
-		if got := hasModuleTool(out, c.name); got != c.want {
-			t.Errorf("hasModuleTool(%q) = %v, want %v", c.name, got, c.want)
-		}
-	}
-}
-
 func TestResolveTool_MissingNotResolvedViaGoTool(t *testing.T) {
 	// A name that is neither a module tool nor on PATH must resolve to
 	// nil, not to a dead "go tool <name>" invocation.

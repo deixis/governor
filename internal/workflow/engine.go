@@ -7,11 +7,11 @@ import (
 	"context"
 	"fmt"
 	"os/exec"
-	"path"
 	"path/filepath"
 	"strings"
 
 	"github.com/deixis/governor/internal/config"
+	"github.com/deixis/governor/internal/gotool"
 	"github.com/deixis/governor/internal/runner"
 )
 
@@ -178,14 +178,21 @@ func nonEmptyLines(out []byte) []string {
 // `go tool` with no arguments), then falls back to exec.LookPath on the
 // system PATH. Returns nil if the tool is not available.
 //
+// A module tool is invoked by import path: `go tool <name>` fails when
+// two directives share a name and runs the built-in when name shadows
+// one (vet, cover, ...). Built-ins never resolve here and fall through
+// to PATH.
+//
 // Probing with `go tool <name> -h` cannot work: a missing tool and a
 // present tool's help both exit non-zero.
 func ResolveTool(dir, name string) []string {
 	if goPath, err := exec.LookPath("go"); err == nil {
 		cmd := exec.Command(goPath, "tool")
 		cmd.Dir = dir
-		if out, err := cmd.Output(); err == nil && hasModuleTool(string(out), name) {
-			return []string{goPath, "tool", name}
+		if out, err := cmd.Output(); err == nil {
+			if importPath := gotool.Find(string(out), name); importPath != "" {
+				return []string{goPath, "tool", importPath}
+			}
 		}
 	}
 
@@ -193,23 +200,6 @@ func ResolveTool(dir, name string) []string {
 		return []string{toolPath}
 	}
 	return nil
-}
-
-// hasModuleTool reports whether the output of `go tool` lists name as a
-// module tool directive. Built-in tools (vet, cover, ...) are listed by
-// bare name, module tools by import path; only the latter are invocable
-// as third-party tools, so a bare-name match is ignored.
-func hasModuleTool(goToolOutput, name string) bool {
-	for line := range strings.SplitSeq(goToolOutput, "\n") {
-		line = strings.TrimSpace(line)
-		if !strings.Contains(line, "/") {
-			continue
-		}
-		if path.Base(line) == name {
-			return true
-		}
-	}
-	return false
 }
 
 // toolInfo holds install metadata for a known tool.

@@ -28,9 +28,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 
 	"github.com/deixis/governor"
+	"github.com/deixis/governor/internal/gotool"
 )
 
 // ImportPath is the main package of the governor binary.
@@ -83,12 +85,7 @@ func decide(p probe) action {
 // hasToolDirective reports whether `go tool` output lists governor's main
 // package as a module tool directive.
 func hasToolDirective(goToolOutput string) bool {
-	for line := range strings.SplitSeq(goToolOutput, "\n") {
-		if strings.TrimSpace(line) == ImportPath {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(gotool.ModuleTools(goToolOutput), ImportPath)
 }
 
 // cachedBinary returns where a governor build for the given toolchain and
