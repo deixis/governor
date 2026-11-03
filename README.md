@@ -55,6 +55,16 @@ go install github.com/deixis/governor/cmd/governor@latest
 
 Requires Go 1.25 or later. Code intelligence runs in process on `go/packages` and `go/types`; no gopls install is needed.
 
+### Toolchain matching
+
+Type-checking in process ties governor to the Go version that built it. A workspace whose `go.mod` selects a newer toolchain would fail to load, so governor checks before each run from the workspace directory and hands over to a matching build when needed:
+
+1. The module declares governor as a tool (`go get -tool github.com/deixis/governor/cmd/governor`): `go tool governor` runs, with the version and toolchain pinned by the workspace.
+2. The workspace toolchain is not newer than the one that built the binary: runs in process.
+3. Otherwise governor installs its own version under the workspace toolchain into the user cache (`~/Library/Caches/governor/<go version>/<governor version>/` on macOS, `~/.cache/governor/...` on Linux) and runs that. Only the first run per toolchain builds.
+
+Source builds without a module version skip step 3. Set `GOVERNOR_NO_REEXEC=1` to disable the handover. Editor and agent configurations keep calling `governor` on `PATH`; nothing per project is required.
+
 ## CLI usage
 
 Governor provides the following commands:

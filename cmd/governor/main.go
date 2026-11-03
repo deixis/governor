@@ -17,6 +17,7 @@ import (
 	"github.com/deixis/governor"
 	"github.com/deixis/governor/internal/config"
 	govmcp "github.com/deixis/governor/internal/mcp"
+	"github.com/deixis/governor/internal/reexec"
 	"github.com/deixis/governor/internal/report"
 	"github.com/deixis/governor/internal/runner"
 	"github.com/deixis/governor/internal/workflow"
@@ -34,6 +35,19 @@ func main() {
 
 	cmd := os.Args[1]
 	args := os.Args[2:]
+
+	switch cmd {
+	case "mcp", "check", "audit", "fix":
+		// Hand over to a governor built with the workspace toolchain when
+		// this binary is too old for it. Returns only when running in
+		// process is the right call, or when the handover failed; in the
+		// latter case the workspace load reports the mismatch itself.
+		if wd, err := os.Getwd(); err == nil {
+			if err := reexec.Maybe(wd, os.Args[1:]); err != nil {
+				log.Printf("warning: %v", err)
+			}
+		}
+	}
 
 	var err error
 	switch cmd {
