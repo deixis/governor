@@ -81,7 +81,7 @@ Results are stored for drill-down via gov_inspect. Returns raw facts without jud
 Use the run_id and a Go-qualified symbol from the tool output.
 Symbol can be an import path (e.g. example.com/foo) for all diagnostics in a package,
 or importpath.Symbol (e.g. example.com/foo.TestAdd) for a specific function.
-Omit symbol for every diagnostic in the run, including "(no package)" groups.`,
+Pass "(no package)" for diagnostics outside any package, or omit symbol for every diagnostic in the run.`,
 	}, h.inspectHandler)
 
 	registerIntelTools(s, h)

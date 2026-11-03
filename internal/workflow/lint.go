@@ -14,6 +14,7 @@ type LintSummary struct {
 
 // LintIssue holds a single lint finding.
 type LintIssue struct {
+	Package string
 	File    string
 	Line    int
 	Column  int
@@ -62,6 +63,17 @@ func (e *Engine) runLint(ctx context.Context, packages []string) (*LintSummary, 
 	}
 
 	summary := parseLintOutput(result.Stdout, result.Stderr)
+	if result.ExitCode != 0 && len(summary.Issues) == 0 {
+		// A failing run with no parsed issue means golangci-lint itself
+		// failed (bad flags, version-manager shim), not a clean run.
+		return nil, fmt.Errorf("golangci-lint failed (exit %d): %s", result.ExitCode, strings.TrimSpace(string(result.Stderr)+string(result.Stdout)))
+	}
+	if len(summary.Issues) > 0 {
+		dirs := e.packageDirs(ctx, pkgs)
+		for i := range summary.Issues {
+			summary.Issues[i].Package, summary.Issues[i].File = e.locate(dirs, summary.Issues[i].File)
+		}
+	}
 	return summary, nil
 }
 

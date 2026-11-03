@@ -11,7 +11,7 @@ import (
 
 type inspectParams struct {
 	RunID  string `json:"run_id" jsonschema:"the run ID from a gov_check or gov_audit result"`
-	Symbol string `json:"symbol,omitempty" jsonschema:"Go-qualified symbol: import path for package scope (e.g. example.com/foo), or importpath.Symbol for a specific function (e.g. example.com/foo.TestAdd). Omit for every diagnostic in the run, including those outside any package."`
+	Symbol string `json:"symbol,omitempty" jsonschema:"Go-qualified symbol: import path for package scope (e.g. example.com/foo), or importpath.Symbol for a specific function (e.g. example.com/foo.TestAdd). Pass \"(no package)\" for diagnostics outside any package. Omit for every diagnostic in the run."`
 }
 
 func (h *handler) inspectHandler(ctx context.Context, req *mcp.CallToolRequest, params inspectParams) (*mcp.CallToolResult, any, error) {

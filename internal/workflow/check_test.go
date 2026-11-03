@@ -191,6 +191,7 @@ func TestCheck_GofumptCoversPackageFilesOnly(t *testing.T) {
 	ar := &argvRunner{results: map[string]*runner.Result{
 		"go list -f " + goFilesTemplate + " ./...":          {Stdout: []byte("/project/a.go\n/project/a_test.go\n")},
 		"/stub/gofumpt -l /project/a.go /project/a_test.go": {Stdout: []byte("/project/a.go\n")},
+		"go list -e -f {{.Dir}}\t{{.ImportPath}} ./...":     {Stdout: []byte("/project\texample.com/m\n")},
 	}}
 	e := &Engine{
 		Config:       &config.Config{Check: config.CheckConfig{Steps: []string{"test"}}},
@@ -207,8 +208,8 @@ func TestCheck_GofumptCoversPackageFilesOnly(t *testing.T) {
 	if result.FailedIdx != -2 {
 		t.Errorf("FailedIdx = %d, want -2 (format failure)", result.FailedIdx)
 	}
-	if n := len(result.RunResult.FormatIssues); n != 1 || result.RunResult.FormatIssues[0].File != "a.go" {
-		t.Errorf("FormatIssues = %+v, want one issue for a.go", result.RunResult.FormatIssues)
+	if n := len(result.RunResult.FormatIssues); n != 1 || result.RunResult.FormatIssues[0].File != "a.go" || result.RunResult.FormatIssues[0].Package != "example.com/m" {
+		t.Errorf("FormatIssues = %+v, want one issue for a.go in example.com/m", result.RunResult.FormatIssues)
 	}
 	for _, call := range ar.calls {
 		if strings.HasSuffix(call[0], "gofumpt") && call[len(call)-1] == "." {
@@ -383,6 +384,28 @@ func TestCheck_StaticcheckFailureWithoutIssuesFails(t *testing.T) {
 	}}
 	e := &Engine{
 		Config:       &config.Config{Check: config.CheckConfig{Steps: []string{"staticcheck"}}},
+		Runner:       ar,
+		Workspace:    "/project",
+		RepoRoot:     "/project",
+		ToolResolver: func(name string) []string { return []string{"/stub/" + name} },
+	}
+
+	result, err := e.Check(context.Background(), nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := result.Steps[0]
+	if step.Status != "fail" || !strings.Contains(step.Output, "No version is set") {
+		t.Errorf("step = %+v, want fail with shim output", step)
+	}
+}
+
+func TestCheck_LintFailureWithoutIssuesFails(t *testing.T) {
+	ar := &argvRunner{results: map[string]*runner.Result{
+		"/stub/golangci-lint run --out-format json ./...": {ExitCode: 126, Stderr: []byte("No version is set for command golangci-lint\n")},
+	}}
+	e := &Engine{
+		Config:       &config.Config{Check: config.CheckConfig{Steps: []string{"lint"}}},
 		Runner:       ar,
 		Workspace:    "/project",
 		RepoRoot:     "/project",

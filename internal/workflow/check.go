@@ -102,12 +102,10 @@ func (e *Engine) Check(ctx context.Context, packages []string, fix bool) (*Check
 			} else if len(summary.Issues) > 0 {
 				results[i] = StepResult{Name: step, Status: "fail", Output: summary.String()}
 				failedIdx = i
-				dirs := e.packageDirs(ctx, pkgs)
 				for _, issue := range summary.Issues {
-					pkg, file := e.locate(dirs, issue.File)
 					rr.LintIssues = append(rr.LintIssues, report.LintIssue{
-						Package: pkg,
-						File:    file,
+						Package: issue.Package,
+						File:    issue.File,
 						Line:    issue.Line,
 						Col:     issue.Column,
 						Linter:  issue.Linter,
@@ -206,10 +204,11 @@ func FormatFailureSymbols(rr *report.RunResult) []string {
 }
 
 // packageLabel names a failure group. Diagnostics outside any workspace
-// package are reachable through gov_inspect without a symbol.
+// package are reachable through gov_inspect by the label or without a
+// symbol.
 func packageLabel(pkg string) string {
 	if pkg == "" {
-		return "(no package)"
+		return report.NoPackage
 	}
 	return pkg
 }
