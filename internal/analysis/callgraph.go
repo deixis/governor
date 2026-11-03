@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"go/ast"
-	"go/token"
 	"go/types"
 	"sort"
 	"strings"
@@ -25,7 +24,6 @@ type Call struct {
 	// Position is the call site.
 	Position string
 	Package  string
-	pos      token.Pos
 }
 
 // Callers returns every static call site of the function or method
@@ -40,7 +38,7 @@ func (w *Workspace) Callers(ctx context.Context, file, symbol string) ([]Call, e
 	if !ok {
 		return nil, fmt.Errorf("%s is a %s, expected a function or method", symbol, objectKind(obj))
 	}
-	root := w.Root()
+	root := snap.root
 	want := objectKey(snap.fset, fn)
 
 	seen := make(map[string]bool)
@@ -51,7 +49,7 @@ func (w *Workspace) Callers(ctx context.Context, file, symbol string) ([]Call, e
 		}
 		for _, f := range p.Syntax {
 			walkCalls(f, func(call *ast.CallExpr, callee types.Object, enclosing string) {
-				if callee == nil || objectKey(snap.fset, callee) != want {
+				if callee == nil || callee.Name() != fn.Name() || objectKey(snap.fset, callee) != want {
 					return
 				}
 				pos := snap.position(root, call.Pos())
@@ -64,7 +62,6 @@ func (w *Workspace) Callers(ctx context.Context, file, symbol string) ([]Call, e
 					Callee:   qualifiedName(fn),
 					Position: pos,
 					Package:  p.PkgPath,
-					pos:      call.Pos(),
 				})
 			}, p)
 		}
@@ -84,7 +81,7 @@ func (w *Workspace) Callees(ctx context.Context, file, symbol string) ([]Call, e
 	if !ok {
 		return nil, fmt.Errorf("%s is a %s, expected a function or method", symbol, objectKind(obj))
 	}
-	root := w.Root()
+	root := snap.root
 
 	// Locate the declaration.
 	filename := snap.fset.Position(fn.Pos()).Filename
@@ -130,7 +127,6 @@ func (w *Workspace) Callees(ctx context.Context, file, symbol string) ([]Call, e
 			Callee:   name,
 			Position: snap.position(root, call.Pos()),
 			Package:  p.PkgPath,
-			pos:      call.Pos(),
 		})
 		return true
 	})
@@ -219,10 +215,10 @@ func calleeOf(call *ast.CallExpr, p *packages.Package) (types.Object, string) {
 }
 
 func sortCalls(calls []Call) {
-	// Positions share one FileSet, so token.Pos orders by file then
-	// offset. Sorting the string form would put col 21 before col 9.
+	// Not by token.Pos: files are parsed in parallel, so their FileSet
+	// bases, and with them the cross-file order, vary between loads.
 	sort.Slice(calls, func(i, j int) bool {
-		return calls[i].pos < calls[j].pos
+		return lessPos(calls[i].Position, calls[j].Position)
 	})
 }
 

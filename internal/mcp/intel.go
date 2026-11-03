@@ -64,22 +64,6 @@ func (h *handler) fileContextHandler(ctx context.Context, _ *sdkmcp.CallToolRequ
 	return textResult(analysis.FormatFileContext(fc))
 }
 
-type referencesParams struct {
-	File   string `json:"file" jsonschema:"Absolute path to a file in the package where the symbol is visible."`
-	Symbol string `json:"symbol" jsonschema:"Symbol name: Foo, T.Method, T.Field, or pkg.Symbol (pkg is an import name in the file)."`
-}
-
-func (h *handler) referencesHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p referencesParams) (*sdkmcp.CallToolResult, any, error) {
-	if p.File == "" || p.Symbol == "" {
-		return errorResult("file and symbol are required")
-	}
-	refs, err := h.intel.References(ctx, p.File, p.Symbol)
-	if err != nil {
-		return errorResult(fmt.Sprintf("references failed: %v", err))
-	}
-	return textResult(analysis.FormatReferences(p.Symbol, refs))
-}
-
 type symbolParams struct {
 	File   string `json:"file" jsonschema:"Absolute path to a file in the package where the symbol is visible."`
 	Symbol string `json:"symbol" jsonschema:"Symbol name: Foo, T.Method, T.Field, or pkg.Symbol (pkg is an import name in the file)."`
@@ -90,6 +74,17 @@ func (p symbolParams) validate() string {
 		return "file and symbol are required"
 	}
 	return ""
+}
+
+func (h *handler) referencesHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p symbolParams) (*sdkmcp.CallToolResult, any, error) {
+	if msg := p.validate(); msg != "" {
+		return errorResult(msg)
+	}
+	refs, err := h.intel.References(ctx, p.File, p.Symbol)
+	if err != nil {
+		return errorResult(fmt.Sprintf("references failed: %v", err))
+	}
+	return textResult(analysis.FormatReferences(p.Symbol, refs))
 }
 
 func (h *handler) definitionHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p symbolParams) (*sdkmcp.CallToolResult, any, error) {

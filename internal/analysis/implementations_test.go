@@ -59,3 +59,36 @@ func TestImplementations(t *testing.T) {
 		t.Error("expected error for a plain function")
 	}
 }
+
+// A method promoted from an embedded interface relates the queried type,
+// not the embedded one.
+func TestImplementations_PromotedMethod(t *testing.T) {
+	dir := writeModule(t, map[string]string{
+		"go.mod": "module example.com/e\n\ngo 1.25\n",
+		"e.go": `package e
+
+type Closer interface{ Close() error }
+
+type ReadCloser interface {
+	Closer
+	Read() string
+}
+
+type Conn struct{}
+
+func (Conn) Close() error { return nil }
+
+type File struct{}
+
+func (File) Read() string  { return "" }
+func (File) Close() error { return nil }
+`,
+	})
+	impls, err := NewWorkspace(dir).Implementations(context.Background(), filepath.Join(dir, "e.go"), "ReadCloser.Close")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(impls) != 1 || impls[0].Name != "File.Close" {
+		t.Errorf("ReadCloser.Close impls = %+v", impls)
+	}
+}

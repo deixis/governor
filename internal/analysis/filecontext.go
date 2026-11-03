@@ -31,7 +31,7 @@ func (w *Workspace) FileContextFor(ctx context.Context, file string) (*FileConte
 	if err != nil {
 		return nil, err
 	}
-	root := w.Root()
+	root := snap.root
 
 	pkgs, err := snap.packagesForFile(file)
 	if err != nil {
@@ -39,13 +39,7 @@ func (w *Workspace) FileContextFor(ctx context.Context, file string) (*FileConte
 	}
 	p := pkgs[0]
 
-	var syntax *ast.File
-	for i, f := range p.CompiledGoFiles {
-		if sameFile(f, file) && i < len(p.Syntax) {
-			syntax = p.Syntax[i]
-			break
-		}
-	}
+	syntax := fileSyntax(p, file)
 	if syntax == nil {
 		return nil, fmt.Errorf("no syntax tree for %s", file)
 	}
@@ -130,31 +124,20 @@ func qualifiedName(obj types.Object) string {
 	return obj.Name()
 }
 
-func sameFile(a, b string) bool {
-	absA, errA := filepath.Abs(a)
-	absB, errB := filepath.Abs(b)
-	if errA != nil || errB != nil {
-		return a == b
-	}
-	if ra, err := filepath.EvalSymlinks(absA); err == nil {
-		absA = ra
-	}
-	if rb, err := filepath.EvalSymlinks(absB); err == nil {
-		absB = rb
-	}
-	return absA == absB
-}
-
+// relPath makes file relative to root when it lives under it, comparing
+// symlink-resolved forms when the paths as given do not match.
 func relPath(root, file string) string {
 	abs, err := filepath.Abs(file)
 	if err != nil {
 		return file
 	}
-	rel, err := filepath.Rel(root, abs)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return abs
+	if rel, err := filepath.Rel(root, abs); err == nil && !strings.HasPrefix(rel, "..") {
+		return rel
 	}
-	return rel
+	if rel, err := filepath.Rel(canonical(root), canonical(abs)); err == nil && !strings.HasPrefix(rel, "..") {
+		return rel
+	}
+	return abs
 }
 
 // FormatFileContext renders a FileContext as plain text.

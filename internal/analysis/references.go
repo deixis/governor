@@ -27,9 +27,14 @@ func (w *Workspace) References(ctx context.Context, file, symbol string) ([]Refe
 	if err != nil {
 		return nil, err
 	}
-	root := w.Root()
+	root := snap.root
 
 	want := objectKey(snap.fset, target)
+	// Every key form ends in the object name; comparing names first skips
+	// building a key for nearly every identifier in the workspace.
+	matches := func(obj types.Object) bool {
+		return obj != nil && obj.Name() == target.Name() && objectKey(snap.fset, obj) == want
+	}
 	seen := make(map[string]bool)
 	var refs []Reference
 	record := func(p *packages.Package, id *ast.Ident, def bool) {
@@ -46,12 +51,12 @@ func (w *Workspace) References(ctx context.Context, file, symbol string) ([]Refe
 			continue
 		}
 		for id, obj := range p.TypesInfo.Defs {
-			if obj != nil && objectKey(snap.fset, obj) == want {
+			if matches(obj) {
 				record(p, id, true)
 			}
 		}
 		for id, obj := range p.TypesInfo.Uses {
-			if objectKey(snap.fset, obj) == want {
+			if matches(obj) {
 				record(p, id, false)
 			}
 		}
@@ -61,14 +66,12 @@ func (w *Workspace) References(ctx context.Context, file, symbol string) ([]Refe
 		if refs[i].Definition != refs[j].Definition {
 			return refs[i].Definition
 		}
-		return refs[i].Position < refs[j].Position
+		return lessPos(refs[i].Position, refs[j].Position)
 	})
 	return refs, nil
 }
 
-// resolve loads the snapshot and resolves symbol as seen from file. Each
-// package variant containing the file is tried in turn: a symbol declared
-// in a _test.go file is only visible in the test variant.
+// resolve loads the snapshot and resolves symbol as seen from file.
 func (w *Workspace) resolve(ctx context.Context, file, symbol string) (*snapshot, types.Object, error) {
 	symbol = strings.TrimSpace(symbol)
 	if symbol == "" {
@@ -78,9 +81,20 @@ func (w *Workspace) resolve(ctx context.Context, file, symbol string) (*snapshot
 	if err != nil {
 		return nil, nil, err
 	}
-	pkgs, err := snap.packagesForFile(file)
+	target, err := snap.lookup(file, symbol)
 	if err != nil {
 		return nil, nil, err
+	}
+	return snap, target, nil
+}
+
+// lookup resolves symbol as seen from file. Each package variant
+// containing the file is tried in turn: a symbol declared in a _test.go
+// file is only visible in the test variant.
+func (s *snapshot) lookup(file, symbol string) (types.Object, error) {
+	pkgs, err := s.packagesForFile(file)
+	if err != nil {
+		return nil, err
 	}
 
 	var target types.Object
@@ -99,15 +113,19 @@ func (w *Workspace) resolve(ctx context.Context, file, symbol string) (*snapshot
 		if resolveErr == nil {
 			resolveErr = fmt.Errorf("symbol %q not found in %s", symbol, file)
 		}
-		return nil, nil, resolveErr
+		return nil, resolveErr
 	}
-	return snap, target, nil
+	return target, nil
 }
 
 // fileSyntax returns the parsed file for path within p, or nil.
 func fileSyntax(p *packages.Package, path string) *ast.File {
+	want := canonical(path)
 	for i, f := range p.CompiledGoFiles {
-		if sameFile(f, path) && i < len(p.Syntax) {
+		if i >= len(p.Syntax) {
+			break
+		}
+		if f == path || f == want || canonical(f) == want {
 			return p.Syntax[i]
 		}
 	}

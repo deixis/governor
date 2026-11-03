@@ -38,12 +38,19 @@ const loadMode = packages.NeedName |
 
 // snapshot is one type-checked view of the workspace.
 type snapshot struct {
+	// root is the directory the snapshot was loaded from. Tools use it
+	// rather than Workspace.Root, which SetRoot may change mid-call.
+	root        string
 	fingerprint uint64
 	fset        *token.FileSet
 	pkgs        []*packages.Package
 	// byFile maps absolute file path to the packages containing it. With
 	// Tests enabled a file can belong to several package variants.
 	byFile map[string][]*packages.Package
+	// dirs holds every loaded package directory, so a file the loader
+	// left out (unparsable package clause) is told apart from one outside
+	// the workspace.
+	dirs map[string]bool
 }
 
 // Workspace loads and caches type information for a Go module tree.
@@ -106,17 +113,23 @@ func (w *Workspace) load(ctx context.Context) (*snapshot, error) {
 	}
 
 	snap := &snapshot{
+		root:        w.root,
 		fingerprint: fp,
 		fset:        fset,
 		pkgs:        pkgs,
 		byFile:      make(map[string][]*packages.Package),
+		dirs:        make(map[string]bool),
 	}
 	// Index files under both the reported path and its symlink-resolved
 	// form (macOS reports /var/... for a /private/var/... cwd).
 	for _, p := range pkgs {
+		if p.Dir != "" {
+			snap.dirs[p.Dir] = true
+			snap.dirs[canonical(p.Dir)] = true
+		}
 		for _, f := range p.CompiledGoFiles {
 			snap.byFile[f] = append(snap.byFile[f], p)
-			if resolved, err := filepath.EvalSymlinks(f); err == nil && resolved != f {
+			if resolved := canonical(f); resolved != f {
 				snap.byFile[resolved] = append(snap.byFile[resolved], p)
 			}
 		}
@@ -151,6 +164,10 @@ func variantRank(p *packages.Package) int {
 // module file under root. Directories named vendor, testdata, or starting
 // with "." or "_" are skipped, matching the `./...` pattern.
 func fingerprint(root string) (uint64, error) {
+	// WalkDir does not descend into a root that is itself a symlink.
+	if resolved, err := filepath.EvalSymlinks(root); err == nil {
+		root = resolved
+	}
 	h := fnv.New64a()
 	err := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -202,17 +219,33 @@ func (s *snapshot) packagesForFile(file string) ([]*packages.Package, error) {
 	return nil, fmt.Errorf("file %s is not part of any loaded package", file)
 }
 
+// contains reports whether the canonical path file belongs to a loaded
+// package or sits in a loaded package's directory.
+func (s *snapshot) contains(file string) bool {
+	return len(s.byFile[file]) > 0 || s.dirs[filepath.Dir(file)]
+}
+
+// canonical returns path made absolute and, when it exists, with symlinks
+// resolved. Paths are compared in this form: the loader reports files
+// under the root as given (/var/... on macOS) while callers may pass the
+// resolved form (/private/var/...), or the reverse.
+func canonical(path string) string {
+	if abs, err := filepath.Abs(path); err == nil {
+		path = abs
+	}
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return resolved
+	}
+	return path
+}
+
 // position formats pos as file:line:col relative to root when possible.
 func (s *snapshot) position(root string, pos token.Pos) string {
 	p := s.fset.Position(pos)
 	if !p.IsValid() {
 		return "<unknown>"
 	}
-	file := p.Filename
-	if rel, err := filepath.Rel(root, file); err == nil && !strings.HasPrefix(rel, "..") {
-		file = rel
-	}
-	return fmt.Sprintf("%s:%d:%d", file, p.Line, p.Column)
+	return fmt.Sprintf("%s:%d:%d", relPath(root, p.Filename), p.Line, p.Column)
 }
 
 // objectKey identifies a types.Object across package variants and across

@@ -13,7 +13,7 @@ import (
 )
 
 // PackageAPI renders the exported declarations of each package in Go
-// syntax, with doc comments and function bodies removed. Unknown import
+// syntax, keeping doc comments and dropping function bodies. Unknown import
 // paths produce an inline note rather than an error so one bad path does
 // not hide the others.
 func (w *Workspace) PackageAPI(ctx context.Context, importPaths []string) (string, error) {
@@ -49,8 +49,9 @@ func (w *Workspace) PackageAPI(ctx context.Context, importPaths []string) (strin
 	return b.String(), nil
 }
 
-// writeExportedDecls prints every exported top-level declaration of p.
-// Methods on exported types are printed after the type, bodies stripped.
+// writeExportedDecls prints every exported top-level declaration of p
+// with its doc comment. Methods on exported types are printed after the
+// type, bodies stripped.
 func writeExportedDecls(b *strings.Builder, fset *token.FileSet, p *packages.Package) error {
 	cfg := printer.Config{Mode: printer.UseSpaces | printer.TabIndent, Tabwidth: 8}
 
@@ -189,9 +190,23 @@ func exportedGenDecl(d *ast.GenDecl) *ast.GenDecl {
 		return nil
 	}
 	if len(c.Specs) == 1 && d.Lparen.IsValid() {
-		// Collapse "type ( X ... )" to "type X ..." for readability.
+		// Collapse "type ( X ... )" to "type X ..." for readability. The
+		// spec's doc comment moves to the declaration: printed on the spec
+		// it would split "const" from its name.
 		c.Lparen = token.NoPos
 		c.Rparen = token.NoPos
+		switch s := c.Specs[0].(type) {
+		case *ast.TypeSpec:
+			if c.Doc == nil {
+				c.Doc = s.Doc
+			}
+			s.Doc = nil
+		case *ast.ValueSpec:
+			if c.Doc == nil {
+				c.Doc = s.Doc
+			}
+			s.Doc = nil
+		}
 	}
 	return &c
 }

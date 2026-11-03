@@ -41,6 +41,36 @@ func copyFixture(t *testing.T, name string) string {
 	return dst
 }
 
+// writeModule writes files (slash path relative to the module root ->
+// content) into a temp dir and returns its symlink-resolved path.
+func writeModule(t *testing.T, files map[string]string) string {
+	t.Helper()
+	dir := t.TempDir()
+	for name, content := range files {
+		path := filepath.Join(dir, filepath.FromSlash(name))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if resolved, err := filepath.EvalSymlinks(dir); err == nil {
+		dir = resolved
+	}
+	return dir
+}
+
+// symlinkTo returns a path in a fresh temp dir that links to target.
+func symlinkTo(t *testing.T, target string) string {
+	t.Helper()
+	link := filepath.Join(t.TempDir(), "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	return link
+}
+
 func TestCacheInvalidation(t *testing.T) {
 	dir := copyFixture(t, "sample")
 	ws := NewWorkspace(dir)

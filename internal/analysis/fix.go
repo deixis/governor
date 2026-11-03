@@ -5,7 +5,7 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -36,29 +36,29 @@ type FixResult struct {
 //  3. gofumpt formatting
 //  4. diagnostics for the file after reload
 //
-// Files that are not part of the workspace are reported with Err set.
+// Files that are not part of the workspace are reported with Err set and
+// left untouched.
 func (w *Workspace) Fix(ctx context.Context, files []string) ([]FixResult, error) {
 	if len(files) == 0 {
 		return nil, fmt.Errorf("no files given")
 	}
-	results := make([]FixResult, len(files))
-	targets := make(map[string]int, len(files))
-	for i, f := range files {
-		abs, err := filepath.Abs(f)
-		if err != nil {
-			results[i] = FixResult{File: f, Err: err}
-			continue
-		}
-		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-			abs = resolved
-		}
-		results[i].File = relPath(w.Root(), abs)
-		targets[abs] = i
-	}
-
 	snap, err := w.load(ctx)
 	if err != nil {
 		return nil, err
+	}
+
+	results := make([]FixResult, len(files))
+	paths := make([]string, len(files)) // canonical, "" when not a target
+	targets := make(map[string]int, len(files))
+	for i, f := range files {
+		abs := canonical(f)
+		results[i].File = relPath(snap.root, f)
+		if !snap.contains(abs) {
+			results[i].Err = fmt.Errorf("not part of any package loaded from %s", snap.root)
+			continue
+		}
+		paths[i] = abs
+		targets[abs] = i
 	}
 
 	// Step 1: modernize on the current snapshot.
@@ -71,11 +71,8 @@ func (w *Workspace) Fix(ctx context.Context, files []string) ([]FixResult, error
 	}
 
 	// Steps 2 and 3: pure text transforms, no type info needed.
-	langVersion, modulePath := moduleInfo(snap)
 	for abs, i := range targets {
-		if results[i].Err != nil {
-			continue
-		}
+		langVersion, modulePath := moduleInfo(snap, abs)
 		changes, err := repairAndFormat(abs, langVersion, modulePath)
 		if err != nil {
 			results[i].Err = err
@@ -84,32 +81,51 @@ func (w *Workspace) Fix(ctx context.Context, files []string) ([]FixResult, error
 		results[i].Changes = append(results[i].Changes, changes...)
 	}
 
-	// Step 4: reload if anything changed, then collect diagnostics.
-	for i := range results {
-		if results[i].Err != nil {
-			continue
+	// Step 4: reload if anything changed, then diagnose every target in
+	// one pass. Errors without a position apply to every file.
+	snap, err = w.load(ctx)
+	if err != nil {
+		return nil, err
+	}
+	filter := make(map[string]bool, len(targets))
+	for abs := range targets {
+		filter[abs] = true
+	}
+	for _, d := range snap.diagnostics(filter) {
+		for i, abs := range paths {
+			if abs != "" && results[i].Err == nil && (d.file == "" || d.file == abs) {
+				results[i].Diagnostics = append(results[i].Diagnostics, d.Diagnostic)
+			}
 		}
-		diags, err := w.Diagnostics(ctx, []string{files[i]})
-		if err != nil {
-			return nil, err
-		}
-		results[i].Diagnostics = diags
 	}
 	return results, nil
 }
 
-// moduleInfo returns the Go language version and module path of the main
-// module, for gofumpt.
-func moduleInfo(snap *snapshot) (langVersion, modulePath string) {
-	for _, p := range snap.pkgs {
-		if p.Module != nil && p.Module.Main {
-			if p.Module.GoVersion != "" {
-				langVersion = "go" + p.Module.GoVersion
-			}
-			return langVersion, p.Module.Path
+// moduleInfo returns the Go language version and module path of the
+// module owning file, falling back to the main module, for gofumpt.
+func moduleInfo(snap *snapshot, file string) (langVersion, modulePath string) {
+	var mod *packages.Module
+	for _, p := range snap.byFile[file] {
+		if p.Module != nil {
+			mod = p.Module
+			break
 		}
 	}
-	return "", ""
+	if mod == nil {
+		for _, p := range snap.pkgs {
+			if p.Module != nil && p.Module.Main {
+				mod = p.Module
+				break
+			}
+		}
+	}
+	if mod == nil {
+		return "", ""
+	}
+	if mod.GoVersion != "" {
+		langVersion = "go" + mod.GoVersion
+	}
+	return langVersion, mod.Path
 }
 
 // repairAndFormat runs goimports then gofumpt on one file, writing it
@@ -210,38 +226,53 @@ func importSet(src []byte) map[string]bool {
 // target files and applies every suggested fix located in those files.
 // Returns a description of applied fixes per absolute file path.
 func applyModernize(snap *snapshot, targets map[string]int) (map[string][]string, error) {
-	// Packages to analyse: plain variants owning a target file.
+	// Packages to analyse: one variant per target, the first by
+	// variantRank (the test variant only for test files). Several targets
+	// in one package share it.
 	var pkgs []*packages.Package
 	seen := make(map[*packages.Package]bool)
 	for abs := range targets {
 		for _, p := range snap.byFile[abs] {
-			if isTestMain(p) || seen[p] {
+			if isTestMain(p) {
 				continue
 			}
-			// Prefer the test variant when the target is a test file,
-			// otherwise the plain package; both contain the file, pick
-			// the first (sorted by variantRank).
-			seen[p] = true
-			pkgs = append(pkgs, p)
+			if !seen[p] {
+				seen[p] = true
+				pkgs = append(pkgs, p)
+			}
 			break
 		}
 	}
 	if len(pkgs) == 0 {
 		return nil, nil
 	}
+	// Deterministic fix order, so overlapping fixes resolve the same way
+	// on every run.
+	sort.Slice(pkgs, func(i, j int) bool { return pkgs[i].ID < pkgs[j].ID })
 
 	graph, err := checker.Analyze(modernize.Suite, pkgs, &checker.Options{})
 	if err != nil {
 		return nil, err
 	}
 
-	// Gather edits per file.
-	type edit struct {
-		start, end int
-		text       []byte
-		desc       string
+	// The fset names files as the loader reported them; targets are
+	// canonical.
+	names := make(map[string]string)
+	canon := func(name string) string {
+		c, ok := names[name]
+		if !ok {
+			c = canonical(name)
+			names[name] = c
+		}
+		return c
 	}
-	edits := make(map[string][]edit)
+
+	// Gather fixes per file. A fix is kept only when every edit lands in
+	// one target file: it is applied whole or not at all. sizes records the
+	// length of each file as parsed, so edits are never applied to a file
+	// that changed on disk since the snapshot was taken.
+	fixes := make(map[string][]suggestedFix)
+	sizes := make(map[string]int)
 	for act := range graph.All() {
 		if !act.IsRoot {
 			continue
@@ -252,67 +283,130 @@ func applyModernize(snap *snapshot, targets map[string]int) (map[string][]string
 				continue
 			}
 			for _, fix := range d.SuggestedFixes {
-				desc := fmt.Sprintf("%s: %s (line %d)", act.Analyzer.Name, fix.Message, dfile.Line(d.Pos))
+				sf := suggestedFix{desc: fmt.Sprintf("%s: %s (line %d)", act.Analyzer.Name, fix.Message, dfile.Line(d.Pos))}
+				file, ok := "", len(fix.TextEdits) > 0
 				for _, te := range fix.TextEdits {
-					file := snap.fset.File(te.Pos)
-					if file == nil {
-						continue
+					tf := snap.fset.File(te.Pos)
+					if tf == nil {
+						ok = false
+						break
 					}
-					if _, ok := targets[file.Name()]; !ok {
-						continue
+					name := canon(tf.Name())
+					if _, isTarget := targets[name]; !isTarget || (file != "" && name != file) {
+						ok = false
+						break
 					}
+					file = name
+					sizes[name] = tf.Size()
 					end := te.End
 					if !end.IsValid() {
 						end = te.Pos
 					}
-					edits[file.Name()] = append(edits[file.Name()], edit{
-						start: file.Offset(te.Pos),
-						end:   file.Offset(end),
-						text:  te.NewText,
-						desc:  desc,
-					})
+					sf.edits = append(sf.edits, textEdit{start: tf.Offset(te.Pos), end: tf.Offset(end), text: te.NewText})
+				}
+				if ok {
+					fixes[file] = append(fixes[file], sf)
 				}
 			}
 		}
 	}
 
 	out := make(map[string][]string)
-	for file, list := range edits {
+	for file, list := range fixes {
 		src, err := os.ReadFile(file)
 		if err != nil {
 			return nil, err
 		}
-		// Apply from the end so earlier offsets stay valid. Overlapping
-		// edits (two analyzers touching one span) are skipped after the
-		// first; the next Fix call picks them up.
-		sort.Slice(list, func(i, j int) bool {
-			if list[i].start != list[j].start {
-				return list[i].start > list[j].start
-			}
-			return list[i].end > list[j].end
-		})
-		applied := make(map[string]bool)
-		lastStart := len(src) + 1
-		for _, e := range list {
-			if e.end > lastStart || e.start < 0 || e.end > len(src) {
-				continue
-			}
-			src = append(src[:e.start], append(append([]byte{}, e.text...), src[e.end:]...)...)
-			lastStart = e.start
-			if !applied[e.desc] {
-				applied[e.desc] = true
-				out[file] = append(out[file], e.desc)
-			}
-		}
-		if len(out[file]) == 0 {
+		if len(src) != sizes[file] {
+			// Edited since the load: offsets are stale. The next call
+			// sees the new content and retries.
 			continue
 		}
-		sort.Strings(out[file])
-		if err := os.WriteFile(file, src, 0o644); err != nil {
+		edits, descs := mergeFixes(list, len(src))
+		if len(edits) == 0 {
+			continue
+		}
+		if err := os.WriteFile(file, applyEdits(src, edits), 0o644); err != nil {
 			return nil, err
 		}
+		out[file] = descs
 	}
 	return out, nil
+}
+
+// textEdit replaces src[start:end] with text.
+type textEdit struct {
+	start, end int
+	text       []byte
+}
+
+// suggestedFix is one analyzer fix confined to a single file.
+type suggestedFix struct {
+	desc  string
+	edits []textEdit
+}
+
+// mergeFixes picks the fixes to apply to a file of size n, in order. A fix
+// is taken whole or not at all: one that overlaps an edit already taken is
+// left for the next Fix call. An edit identical to one already taken (the
+// same fix reported by two package variants, or two fixes adding the same
+// import) is kept once. Returns the edits ordered for back-to-front
+// application and the sorted descriptions of the fixes taken.
+func mergeFixes(fixes []suggestedFix, n int) ([]textEdit, []string) {
+	var taken []textEdit
+	var descs []string
+	seenDesc := make(map[string]bool)
+	for _, f := range fixes {
+		var add []textEdit
+		ok := true
+	edits:
+		for _, e := range f.edits {
+			if e.start < 0 || e.end < e.start || e.end > n {
+				ok = false
+				break
+			}
+			for _, t := range taken {
+				if t.start == e.start && t.end == e.end && bytes.Equal(t.text, e.text) {
+					continue edits
+				}
+				if e.start < t.end && t.start < e.end {
+					ok = false
+					break edits
+				}
+			}
+			add = append(add, e)
+		}
+		if !ok || len(add) == 0 {
+			continue
+		}
+		taken = append(taken, add...)
+		if !seenDesc[f.desc] {
+			seenDesc[f.desc] = true
+			descs = append(descs, f.desc)
+		}
+	}
+
+	// Back to front. For equal starts the longer edit goes first, so an
+	// insertion lands before the text replaced at the same offset; of two
+	// insertions at one offset the later-taken goes first, so the output
+	// keeps the order they were taken in.
+	slices.Reverse(taken)
+	sort.SliceStable(taken, func(i, j int) bool {
+		if taken[i].start != taken[j].start {
+			return taken[i].start > taken[j].start
+		}
+		return taken[i].end > taken[j].end
+	})
+	sort.Strings(descs)
+	return taken, descs
+}
+
+// applyEdits applies edits in the order given, as mergeFixes returns them.
+func applyEdits(src []byte, edits []textEdit) []byte {
+	for _, e := range edits {
+		src = append(src[:e.start], append(append([]byte{}, e.text...), src[e.end:]...)...)
+	}
+	return src
 }
 
 // FormatFixResults renders fix results as plain text.

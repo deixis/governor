@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -31,66 +32,82 @@ func (w *Workspace) Diagnostics(ctx context.Context, files []string) ([]Diagnost
 	if err != nil {
 		return nil, err
 	}
-	root := w.Root()
-
 	filter := make(map[string]bool, len(files))
 	for _, f := range files {
-		abs, err := filepath.Abs(f)
-		if err != nil {
-			return nil, err
+		filter[canonical(f)] = true
+	}
+	tagged := snap.diagnostics(filter)
+	out := make([]Diagnostic, len(tagged))
+	for i, d := range tagged {
+		out[i] = d.Diagnostic
+	}
+	return out, nil
+}
+
+// fileDiagnostic is a Diagnostic tagged with the canonical path of its
+// file, or "" when the error has no position.
+type fileDiagnostic struct {
+	file string
+	Diagnostic
+}
+
+// diagnostics collects the snapshot's errors, sorted by position. When
+// filter (canonical paths) is non-empty, errors located in other files are
+// dropped; errors without a position are always kept.
+func (s *snapshot) diagnostics(filter map[string]bool) []fileDiagnostic {
+	resolved := make(map[string]string)
+	canon := func(file string) string {
+		c, ok := resolved[file]
+		if !ok {
+			c = canonical(file)
+			resolved[file] = c
 		}
-		if resolved, err := filepath.EvalSymlinks(abs); err == nil {
-			abs = resolved
-		}
-		filter[abs] = true
+		return c
 	}
 
 	seen := make(map[string]bool)
-	var out []Diagnostic
-	packages.Visit(snap.pkgs, nil, func(p *packages.Package) {
+	var out []fileDiagnostic
+	packages.Visit(s.pkgs, nil, func(p *packages.Package) {
 		if isTestMain(p) {
 			return
 		}
-		for _, e := range expandErrors(p) {
-			file, ok := splitErrorPos(e)
-			if len(filter) > 0 && ok && !filter[file] {
+		for _, e := range expandErrors(p, s.root) {
+			file, key := "", e.Pos
+			if f, ok := splitErrorPos(e); ok {
+				file = canon(f)
+				key = file + strings.TrimPrefix(e.Pos, f)
+			}
+			if len(filter) > 0 && file != "" && !filter[file] {
 				continue
 			}
-			key := e.Pos + "\x00" + e.Msg
+			key += "\x00" + e.Msg
 			if seen[key] {
 				continue
 			}
 			seen[key] = true
-			out = append(out, Diagnostic{
-				Position: relativePos(root, e.Pos),
+			out = append(out, fileDiagnostic{file: file, Diagnostic: Diagnostic{
+				Position: relativePos(s.root, e.Pos),
 				Package:  p.PkgPath,
 				Message:  e.Msg,
-			})
+			}})
 		}
 	})
 
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].Position != out[j].Position {
-			return out[i].Position < out[j].Position
+			return lessPos(out[i].Position, out[j].Position)
 		}
 		return out[i].Message < out[j].Message
 	})
-	return out, nil
+	return out
 }
 
 // expandErrors normalises p.Errors. `go list` reports compile failures as
-// one positionless ListError whose message is "# pkg\n./file:l:c: msg\n..."
-// with paths relative to the package directory. Those are split into one
-// error per line with absolute positions so they dedupe against the type
-// checker's own report of the same problem.
-func expandErrors(p *packages.Package) []packages.Error {
-	dir := ""
-	if len(p.GoFiles) > 0 {
-		dir = filepath.Dir(p.GoFiles[0])
-	} else if p.Module != nil {
-		dir = p.Module.Dir
-	}
-
+// one positionless ListError whose message is "# pkg\nsub/file:l:c: msg\n..."
+// with paths relative to the directory it ran in, the workspace root.
+// Those are split into one error per line with absolute positions so they
+// dedupe against the type checker's own report of the same problem.
+func expandErrors(p *packages.Package, root string) []packages.Error {
 	var out []packages.Error
 	for _, e := range p.Errors {
 		if e.Kind != packages.ListError || !strings.HasPrefix(e.Msg, "# ") {
@@ -108,10 +125,10 @@ func expandErrors(p *packages.Package) []packages.Error {
 			if !ok {
 				continue
 			}
-			if !filepath.IsAbs(pos) && dir != "" {
-				// pos is ./file:l:c; make the file absolute.
+			if !filepath.IsAbs(pos) {
+				// pos is relative to the go command's directory.
 				file, suffix := splitFileSuffix(pos)
-				pos = filepath.Join(dir, file) + suffix
+				pos = filepath.Join(root, file) + suffix
 			}
 			out = append(out, packages.Error{Pos: pos, Msg: msg, Kind: packages.TypeError})
 			expanded++
@@ -176,6 +193,37 @@ func splitErrorPos(e packages.Error) (file string, ok bool) {
 	return pos, true
 }
 
+// lessPos orders "file:line:col" strings by file, then numerically by line
+// and column, so line 9 sorts before line 10.
+func lessPos(a, b string) bool {
+	fa, la, ca := parsePos(a)
+	fb, lb, cb := parsePos(b)
+	if fa != fb {
+		return fa < fb
+	}
+	if la != lb {
+		return la < lb
+	}
+	return ca < cb
+}
+
+// parsePos splits "file:line:col" or "file:line". Missing numbers are 0;
+// a string without a position is returned whole as file.
+func parsePos(pos string) (file string, line, col int) {
+	file, ok := splitErrorPos(packages.Error{Pos: pos})
+	if !ok {
+		return pos, 0, 0
+	}
+	nums := strings.Split(strings.TrimPrefix(strings.TrimPrefix(pos, file), ":"), ":")
+	if len(nums) > 0 {
+		line, _ = strconv.Atoi(nums[0])
+	}
+	if len(nums) > 1 {
+		col, _ = strconv.Atoi(nums[1])
+	}
+	return file, line, col
+}
+
 func isDigits(s string) bool {
 	if s == "" {
 		return false
@@ -198,11 +246,7 @@ func relativePos(root, pos string) string {
 	if !ok {
 		return pos
 	}
-	rel, err := filepath.Rel(root, file)
-	if err != nil || strings.HasPrefix(rel, "..") {
-		return pos
-	}
-	return rel + strings.TrimPrefix(pos, file)
+	return relPath(root, file) + strings.TrimPrefix(pos, file)
 }
 
 // FormatDiagnostics renders diagnostics as plain text for an agent.

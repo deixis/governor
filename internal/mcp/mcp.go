@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"github.com/deixis/governor"
-	"github.com/deixis/governor/internal/config"
 	"github.com/deixis/governor/internal/analysis"
+	"github.com/deixis/governor/internal/config"
 	"github.com/deixis/governor/internal/report"
 	"github.com/deixis/governor/internal/runner"
 	"github.com/deixis/governor/internal/workflow"

@@ -31,7 +31,7 @@ func (w *Workspace) Outline(ctx context.Context, target string) ([]OutlineEntry,
 	if err != nil {
 		return nil, err
 	}
-	root := w.Root()
+	root := snap.root
 
 	var files []*ast.File
 	if strings.HasSuffix(target, ".go") || filepath.IsAbs(target) {
@@ -40,9 +40,11 @@ func (w *Workspace) Outline(ctx context.Context, target string) ([]OutlineEntry,
 			return nil, err
 		}
 		// The test variant (if any) parses the same file; one copy suffices.
-		if f := fileSyntax(pkgs[0], target); f != nil {
-			files = append(files, f)
+		f := fileSyntax(pkgs[0], target)
+		if f == nil {
+			return nil, fmt.Errorf("no syntax tree for %s", target)
 		}
+		files = append(files, f)
 	} else {
 		seen := make(map[string]bool)
 		for _, p := range snap.pkgs {
@@ -169,8 +171,8 @@ func oneLine(fset *token.FileSet, n ast.Node) string {
 		return "?"
 	}
 	s := strings.Join(strings.Fields(buf.String()), " ")
-	if len(s) > 160 {
-		s = s[:157] + "..."
+	if r := []rune(s); len(r) > 160 {
+		s = string(r[:157]) + "..."
 	}
 	return s
 }

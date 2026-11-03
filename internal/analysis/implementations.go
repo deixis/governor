@@ -33,9 +33,9 @@ func (w *Workspace) Implementations(ctx context.Context, file, symbol string) ([
 	if err != nil {
 		return nil, err
 	}
-	root := w.Root()
+	root := snap.root
 
-	// Method query: reduce to its receiver type, then filter by name.
+	// Method query: reduce to its type, then filter by name.
 	methodName := ""
 	if fn, ok := obj.(*types.Func); ok {
 		recv := fn.Type().(*types.Signature).Recv()
@@ -43,15 +43,28 @@ func (w *Workspace) Implementations(ctx context.Context, file, symbol string) ([
 			return nil, fmt.Errorf("%s is a function, not a type or method", symbol)
 		}
 		methodName = fn.Name()
-		t := recv.Type()
-		if ptr, ok := t.(*types.Pointer); ok {
-			t = ptr.Elem()
+		obj = nil
+		// The type named in the query, not the receiver: a promoted
+		// method's receiver is the embedded type that declares it.
+		symbol = strings.TrimSpace(symbol)
+		if i := strings.LastIndex(symbol, "."); i > 0 {
+			if t, err := snap.lookup(file, symbol[:i]); err == nil {
+				if tn, ok := t.(*types.TypeName); ok {
+					obj = tn
+				}
+			}
 		}
-		named, ok := t.(*types.Named)
-		if !ok {
-			return nil, fmt.Errorf("receiver of %s is not a named type", symbol)
+		if obj == nil {
+			t := recv.Type()
+			if ptr, ok := t.(*types.Pointer); ok {
+				t = ptr.Elem()
+			}
+			named, ok := t.(*types.Named)
+			if !ok {
+				return nil, fmt.Errorf("receiver of %s is not a named type", symbol)
+			}
+			obj = named.Obj()
 		}
-		obj = named.Obj()
 	}
 
 	tn, ok := obj.(*types.TypeName)

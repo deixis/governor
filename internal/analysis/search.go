@@ -38,7 +38,7 @@ func (w *Workspace) Search(ctx context.Context, query string) ([]Symbol, error) 
 	if err != nil {
 		return nil, err
 	}
-	root := w.Root()
+	root := snap.root
 
 	seen := make(map[string]bool)
 	var hits []Symbol

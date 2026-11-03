@@ -26,7 +26,7 @@ func (w *Workspace) DefinitionOf(ctx context.Context, file, symbol string) (*Def
 	if err != nil {
 		return nil, err
 	}
-	return snap.definition(w.Root(), obj), nil
+	return snap.definition(snap.root, obj), nil
 }
 
 // definition builds a Definition for obj.

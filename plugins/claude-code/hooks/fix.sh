@@ -1,8 +1,9 @@
 #!/bin/sh
 # PostToolUse hook: run `governor fix` on the Go file an edit tool just
-# touched. Reads the hook event on stdin, prints governor's output so it
-# reaches the agent as context, and always exits 0 so a diagnostic never
-# blocks the edit itself.
+# touched. Reads the hook event on stdin. Output is fed back to the agent
+# on stderr with exit code 2, the only PostToolUse channel the agent sees
+# (exit 0 stdout only reaches the transcript). The edit itself has already
+# happened, so exit 2 never blocks it.
 
 set -u
 
@@ -22,11 +23,17 @@ case "$file" in
 esac
 
 if ! command -v governor >/dev/null 2>&1; then
-  echo "governor is not installed; gov_fix skipped for $file."
-  echo "Install: go install github.com/deixis/governor/cmd/governor@latest"
-  exit 0
+  echo "governor is not installed; gov_fix skipped for $file." >&2
+  echo "Install: go install github.com/deixis/governor/cmd/governor@latest" >&2
+  exit 2
 fi
 
-cd "${CLAUDE_PROJECT_DIR:-.}" || exit 0
-governor fix -q "$file"
+# Run from the file's directory so the go command resolves the module that
+# owns it, not the project root (which may hold no go.mod in a monorepo).
+cd "$(dirname "$file")" || exit 0
+out=$(governor fix -q "$file" 2>&1)
+if [ -n "$out" ]; then
+  printf '%s\n' "$out" >&2
+  exit 2
+fi
 exit 0
