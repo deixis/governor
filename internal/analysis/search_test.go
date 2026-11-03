@@ -70,7 +70,7 @@ func TestFuzzyScore(t *testing.T) {
 	prefix, _ := fuzzyScore("serv", "Server")
 	sub, _ := fuzzyScore("erve", "Server")
 	scattered, _ := fuzzyScore("srv", "Server")
-	if !(exact > prefix && prefix > sub && sub > scattered) {
+	if exact <= prefix || prefix <= sub || sub <= scattered {
 		t.Errorf("ranking: exact=%d prefix=%d sub=%d scattered=%d", exact, prefix, sub, scattered)
 	}
 }

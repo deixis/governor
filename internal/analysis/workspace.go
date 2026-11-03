@@ -174,7 +174,8 @@ func fingerprint(root string) (uint64, error) {
 			}
 			return err
 		}
-		fmt.Fprintf(h, "%s\x00%d\x00%d\n", path, info.Size(), info.ModTime().UnixNano())
+		// hash.Hash writes never fail.
+		_, _ = fmt.Fprintf(h, "%s\x00%d\x00%d\n", path, info.Size(), info.ModTime().UnixNano())
 		return nil
 	})
 	if err != nil {
