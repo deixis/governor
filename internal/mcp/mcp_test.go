@@ -292,10 +292,10 @@ func TestGovInspect_AfterFailingCheck(t *testing.T) {
 // --- gov_check with lint ---
 
 func TestGovCheck_WithLint(t *testing.T) {
-	if workflow.ResolveTool("golangci-lint") == nil {
+	dir := copyFixture(t, "passing")
+	if workflow.ResolveTool(dir, "golangci-lint") == nil {
 		t.Skip("golangci-lint not available")
 	}
-	dir := copyFixture(t, "passing")
 	cfg := &config.Config{
 		Check: config.CheckConfig{Steps: []string{"test", "lint"}},
 	}
@@ -304,5 +304,131 @@ func TestGovCheck_WithLint(t *testing.T) {
 	text := resultText(res)
 	if !strings.Contains(text, "test: pass") {
 		t.Errorf("expected test step to pass, got:\n%s", text)
+	}
+}
+
+func TestGovDiagnostics(t *testing.T) {
+	dir := copyFixture(t, "builderror")
+	cs := setup(t, dir, nil)
+	res := callTool(t, cs, "gov_diagnostics", nil)
+	text := resultText(res)
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", text)
+	}
+	if !strings.Contains(text, "main.go:8:") {
+		t.Errorf("expected a main.go:8 diagnostic, got:\n%s", text)
+	}
+}
+
+func TestGovDiagnostics_Clean(t *testing.T) {
+	dir := copyFixture(t, "passing")
+	cs := setup(t, dir, nil)
+	res := callTool(t, cs, "gov_diagnostics", map[string]any{"files": []string{filepath.Join(dir, "main.go")}})
+	if text := resultText(res); res.IsError || text != "No diagnostics." {
+		t.Errorf("unexpected output: %s", text)
+	}
+}
+
+func TestGovSearch(t *testing.T) {
+	dir := copyFixture(t, "passing")
+	cs := setup(t, dir, nil)
+	res := callTool(t, cs, "gov_search", map[string]any{"query": "add"})
+	text := resultText(res)
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", text)
+	}
+	if !strings.Contains(text, "testpassing.Add") {
+		t.Errorf("expected Add in output, got:\n%s", text)
+	}
+}
+
+func TestGovPackageAPI(t *testing.T) {
+	dir := copyFixture(t, "passing")
+	cs := setup(t, dir, nil)
+	res := callTool(t, cs, "gov_package_api", map[string]any{"packagePaths": []string{"testpassing"}})
+	text := resultText(res)
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", text)
+	}
+	if !strings.Contains(text, "func Add(a, b int) int") {
+		t.Errorf("expected Add signature, got:\n%s", text)
+	}
+}
+
+func TestGovSymbolReferences(t *testing.T) {
+	dir := copyFixture(t, "passing")
+	cs := setup(t, dir, nil)
+	res := callTool(t, cs, "gov_symbol_references", map[string]any{
+		"file":   filepath.Join(dir, "main.go"),
+		"symbol": "Add",
+	})
+	text := resultText(res)
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", text)
+	}
+	if !strings.Contains(text, "def main.go:4:6") || !strings.Contains(text, "main_test.go:6:12") {
+		t.Errorf("expected definition and test use, got:\n%s", text)
+	}
+}
+
+func TestGovFileContext(t *testing.T) {
+	dir := copyFixture(t, "passing")
+	cs := setup(t, dir, nil)
+	res := callTool(t, cs, "gov_file_context", map[string]any{"file": filepath.Join(dir, "main_test.go")})
+	text := resultText(res)
+	if res.IsError {
+		t.Fatalf("unexpected error: %s", text)
+	}
+	if !strings.Contains(text, "Add  main.go:4:6") {
+		t.Errorf("expected Add use from main.go, got:\n%s", text)
+	}
+}
+
+func TestGovDefinition(t *testing.T) {
+	dir := copyFixture(t, "passing")
+	cs := setup(t, dir, nil)
+	res := callTool(t, cs, "gov_definition", map[string]any{"file": filepath.Join(dir, "main_test.go"), "symbol": "Add"})
+	text := resultText(res)
+	if res.IsError || !strings.Contains(text, "Defined: main.go:4:6") || !strings.Contains(text, "Add adds two integers.") {
+		t.Errorf("unexpected output:\n%s", text)
+	}
+}
+
+func TestGovCallers(t *testing.T) {
+	dir := copyFixture(t, "passing")
+	cs := setup(t, dir, nil)
+	res := callTool(t, cs, "gov_callers", map[string]any{"file": filepath.Join(dir, "main.go"), "symbol": "Add"})
+	text := resultText(res)
+	if res.IsError || !strings.Contains(text, "main_test.go:6:12  in TestAdd") {
+		t.Errorf("unexpected output:\n%s", text)
+	}
+}
+
+func TestGovCallees(t *testing.T) {
+	dir := copyFixture(t, "passing")
+	cs := setup(t, dir, nil)
+	res := callTool(t, cs, "gov_callees", map[string]any{"file": filepath.Join(dir, "main_test.go"), "symbol": "TestAdd"})
+	text := resultText(res)
+	if res.IsError || !strings.Contains(text, "Add") || !strings.Contains(text, "testing.common.Errorf") {
+		t.Errorf("unexpected output:\n%s", text)
+	}
+}
+
+func TestGovImplementations(t *testing.T) {
+	dir := copyFixture(t, "passing")
+	cs := setup(t, dir, nil)
+	res := callTool(t, cs, "gov_implementations", map[string]any{"file": filepath.Join(dir, "main.go"), "symbol": "Add"})
+	if text := resultText(res); !res.IsError || !strings.Contains(text, "not a type or method") {
+		t.Errorf("unexpected output:\n%s", text)
+	}
+}
+
+func TestGovOutline(t *testing.T) {
+	dir := copyFixture(t, "passing")
+	cs := setup(t, dir, nil)
+	res := callTool(t, cs, "gov_outline", map[string]any{"target": "testpassing"})
+	text := resultText(res)
+	if res.IsError || !strings.Contains(text, "func Add(a, b int) int") || !strings.Contains(text, "func TestAdd(t *testing.T)") {
+		t.Errorf("unexpected output:\n%s", text)
 	}
 }

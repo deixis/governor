@@ -10,7 +10,7 @@ import (
 )
 
 func (e *Engine) runVulncheck(ctx context.Context, packages []string) ([]report.Vuln, error) {
-	argv := ResolveTool("govulncheck")
+	argv := e.resolveTool("govulncheck")
 	if argv == nil {
 		return nil, NewErrToolUnavailable("govulncheck")
 	}

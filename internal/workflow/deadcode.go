@@ -11,7 +11,7 @@ import (
 )
 
 func (e *Engine) runDeadcode(ctx context.Context, packages []string) ([]report.DeadFunc, error) {
-	argv := ResolveTool("deadcode")
+	argv := e.resolveTool("deadcode")
 	if argv == nil {
 		return nil, NewErrToolUnavailable("deadcode")
 	}

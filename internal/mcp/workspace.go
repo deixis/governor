@@ -14,18 +14,6 @@ type workspaceParams struct{}
 func (h *handler) workspaceHandler(ctx context.Context, req *sdkmcp.CallToolRequest, _ workspaceParams) (*sdkmcp.CallToolResult, any, error) {
 	var b strings.Builder
 
-	// If gopls is available, merge its go_workspace output first.
-	// This provides richer information (view type, diagnostics status, etc.).
-	if h.gopls != nil {
-		goplsInfo := h.gopls.callGoWorkspace(ctx)
-		if goplsInfo != "" {
-			fmt.Fprintln(&b, goplsInfo)
-			fmt.Fprintln(&b)
-			fmt.Fprintln(&b, "--- Governor ---")
-			fmt.Fprintln(&b)
-		}
-	}
-
 	// Module info via `go list -m -json`.
 	modResult, err := h.engine.Runner.Run(ctx, []string{"go", "list", "-m", "-json"}, "")
 	if err != nil {

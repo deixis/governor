@@ -1,6 +1,6 @@
 # Governor MCP server
 
-Governor provides deterministic, structured execution for Go projects: validation, auditing, and code intelligence.
+Governor provides deterministic, structured execution for Go projects: code intelligence, validation, and auditing. Its intelligence tools run on a type-checked snapshot of the workspace, so they answer questions that text search cannot: what a symbol is, who calls it, which types satisfy an interface. Prefer them over grep and over reading whole files.
 
 ## Detecting a Go workspace
 
@@ -8,45 +8,58 @@ At the start of every session, you MUST use the `gov_workspace` tool to learn ab
 
 ## Go programming workflows
 
-These guidelines MUST be followed whenever working in a Go workspace. There are two workflows described below: the 'Read Workflow' must be followed when the user asks a question about a Go workspace. The 'Write Workflow' must be followed when the user edits a Go workspace.
+These guidelines MUST be followed whenever working in a Go workspace. The 'Read Workflow' applies when the user asks a question about a Go workspace. The 'Write Workflow' applies when the user edits a Go workspace.
 
 You may re-do parts of each workflow as necessary to recover from errors. However, you must not skip any steps.
 
 ### Read workflow
 
-The goal of the read workflow is to understand the codebase.
+The goal of the read workflow is to understand the codebase with the fewest file reads.
 
-1. **Understand the workspace layout**: Start by using `gov_workspace` to understand the overall structure of the workspace, such as whether it's a module, a workspace, or a GOPATH project.
+1. **Understand the workspace layout**: Start with `gov_workspace` for the module path, Go version and package list.
 
-2. **Find relevant symbols**: If you're looking for a specific type, function, or variable, use `gov_search`. This is a fuzzy search that will help you locate symbols even if you don't know the exact name or location.
-   EXAMPLE: search for the 'Server' type: `gov_search({"query":"server"})`
+2. **Find relevant symbols**: When looking for a type, function, variable, method or field by name, use `gov_search`. It is fuzzy and case-insensitive, and returns kind, qualified name and location. Do NOT grep for declarations.
+   EXAMPLE: `gov_search({"query":"server"})`
 
-3. **Understand a file and its intra-package dependencies**: When you have a file path and want to understand its contents and how it connects to other files *in the same package*, use `gov_file_context`. This tool will show you a summary of the declarations from other files in the same package that are used by the current file. `gov_file_context` MUST be used immediately after reading any Go file for the first time, and MAY be re-used if dependencies have changed.
-   EXAMPLE: to understand `server.go`'s dependencies on other files in its package: `gov_file_context({"file":"/path/to/server.go"})`
+3. **Survey before reading**: Before reading any Go file, call `gov_outline` on the file or its package. It lists every top-level declaration with line ranges and signatures, no bodies. Then read only the line ranges you need. For a file over 200 lines this is mandatory.
+   EXAMPLE: `gov_outline({"target":"/path/to/server.go"})` or `gov_outline({"target":"example.com/internal/storage"})`
 
-4. **Understand a package's public API**: When you need to understand what a package provides to external code (i.e., its public API), use `gov_package_api`. This is especially useful for understanding third-party dependencies or other packages in the same monorepo.
-   EXAMPLE: to see the API of the `storage` package: `gov_package_api({"packagePaths":["example.com/internal/storage"]})`
+4. **Resolve a symbol**: When you meet an identifier and need to know what it is, use `gov_definition`. It returns the declaration location, the signature and the doc comment. Do NOT search for the declaration or open its file to find out.
+   EXAMPLE: `gov_definition({"file":"/path/to/server.go","symbol":"Store.Put"})`
+   Symbol forms accepted everywhere: `Foo`, `T.Method`, `T.Field`, `pkg.Symbol`, `pkg.T.Method`, where `pkg` is an import name in the given file.
+
+5. **Follow an interface**: For any interface, use `gov_implementations` before assuming which concrete type is in play. For a concrete type, it lists the workspace interfaces the type satisfies. For a method, it lists the matching methods on the other side.
+   EXAMPLE: `gov_implementations({"file":"/path/to/store.go","symbol":"Store"})`
+
+6. **Follow the call graph**: To learn how a function is used, use `gov_callers`; each call site is reported with its enclosing function. To learn what a function does without reading its body, use `gov_callees`. Calls through an interface resolve to the interface method, so query that method to see dynamic dispatch sites.
+   EXAMPLE: `gov_callers({"file":"/path/to/server.go","symbol":"Server.Start"})`
+
+7. **Understand a file's dependencies**: After reading a Go file for the first time, call `gov_file_context`. It lists the same-package symbols the file uses from sibling files and the exported symbols it uses from each import.
+   EXAMPLE: `gov_file_context({"file":"/path/to/server.go"})`
+
+8. **Understand a package's public API**: To see what a package offers to external code, use `gov_package_api`. It prints the exported declarations in Go syntax with doc comments and without bodies.
+   EXAMPLE: `gov_package_api({"packagePaths":["example.com/internal/storage"]})`
 
 ### Write workflow
 
-The editing workflow is iterative. You should cycle through these steps until the task is complete.
+The editing workflow is iterative. Cycle through these steps until the task is complete.
 
-1. **Read first**: Before making any edits, follow the Read Workflow to understand the user's request and the relevant code.
+1. **Read first**: Follow the Read Workflow to understand the request and the relevant code.
 
-2. **Find references**: Before modifying the definition of any symbol, use the `gov_symbol_references` tool to find all references to that identifier. This is critical for understanding the impact of your change. Read the files containing references to evaluate if any further edits are required.
+2. **Measure the blast radius**: Before modifying the definition of any symbol, use `gov_symbol_references` to find every reference. Before changing a function's signature or behaviour, also use `gov_callers`. Before changing an interface, or a method that satisfies one, use `gov_implementations` to find the other side. Read the files containing references to evaluate whether further edits are required.
    EXAMPLE: `gov_symbol_references({"file":"/path/to/server.go","symbol":"Server.Run"})`
 
-3. **Make edits**: Make the required edits, including edits to references you identified in the previous step. Don't proceed to the next step until all planned edits are complete.
+3. **Make edits**: Make the required edits, including edits to the references and implementations you identified. Don't proceed until all planned edits are complete.
 
-4. **Check for errors**: After every code modification, you MUST call the `gov_diagnostics` tool. Pass the paths of the files you have edited. This tool will report any build or analysis errors.
-   EXAMPLE: `gov_diagnostics({"files":["/path/to/server.go"]})`
+4. **Fix and check each edited file**: After every code modification, you MUST call `gov_fix` with the paths of the files you edited. It repairs missing and unused imports, formats with gofumpt, applies safe modernisation rewrites, and then reports the remaining build and type errors for those files. It changes the files on disk, so re-read any file it reports as changed before editing it again. Use `gov_fix` instead of `gov_diagnostics`; it is a superset.
+   EXAMPLE: `gov_fix({"files":["/path/to/server.go"]})`
 
-5. **Fix errors**: If `gov_diagnostics` reports any errors, fix them. The tool may provide suggested quick fixes in the form of diffs. You should review these diffs and apply them if they are correct. Once you've applied a fix, re-run `gov_diagnostics` to confirm that the issue is resolved. It is OK to ignore 'hint' or 'info' diagnostics if they are not relevant to the current task. Note that Go diagnostic messages may contain a summary of the source code, which may not match its exact text.
+5. **Fix errors**: If `gov_fix` reports diagnostics, fix them and call `gov_fix` again. Note that Go diagnostic messages may contain a summary of the source code, which may not match its exact text. `gov_diagnostics` with no arguments reports errors for the whole workspace when you need to confirm nothing else broke.
 
-6. **Check changes**: Once `gov_diagnostics` reports no errors (and ONLY once there are no errors), you MUST call `gov_check` to verify correctness. It runs auto-fix, test, lint, and staticcheck in order, stopping on first failure. Pass `fix=false` to skip auto-fix. Do NOT run tests on `./...` unless the user explicitly requests it. Scope to the packages you changed.
+6. **Check changes**: Once `gov_fix` reports no diagnostics (and ONLY then), you MUST call `gov_check` to verify correctness. It runs auto-fix, test, lint, and staticcheck in order, stopping on first failure. Pass `fix=false` to skip auto-fix. Do NOT run tests on `./...` unless the user explicitly requests it. Scope to the packages you changed.
    EXAMPLE: `gov_check({"packages": ["./pkg/foo/..."]})`
 
-7. **Audit code quality**: Before considering a code modification done, you MUST call `gov_audit` to evaluate the code quality and identify any existing security risks. If your edits involved adding or updating dependencies in `go.mod`, this step also ensures that new dependencies do not introduce vulnerabilities.
+7. **Audit code quality**: Before considering a code modification done, you MUST call `gov_audit` to evaluate code quality and identify security risks. If your edits added or updated dependencies in `go.mod`, this step also checks that new dependencies do not introduce vulnerabilities.
    EXAMPLE: `gov_audit({"packages": ["./pkg/foo/..."]})`
 
 8. **Inspect diagnostics**: Use `gov_inspect` to drill into a `gov_check` or `gov_audit` run. Do NOT re-run the command just to see more output.
@@ -55,7 +68,9 @@ The editing workflow is iterative. You should cycle through these steps until th
 
 ## Rules
 
-- Prefer `gov_check` over calling individual tools.
+- Prefer Governor's intelligence tools over grep, find and reading whole files. They see types; text search does not.
+- `gov_outline` before reading a file. `gov_definition` before opening a declaration. `gov_implementations` before assuming a concrete type.
+- `gov_fix` after every edit. `gov_check` before declaring work done.
 - Use `gov_inspect` instead of re-running commands.
 - Do NOT ignore test or lint failures unless the user explicitly instructs you to.
 - Missing external tools are reported as `unavailable` with install instructions.

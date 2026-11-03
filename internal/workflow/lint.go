@@ -39,7 +39,7 @@ func (s *LintSummary) String() string {
 }
 
 func (e *Engine) runLint(ctx context.Context, packages []string) (*LintSummary, error) {
-	argv := ResolveTool("golangci-lint")
+	argv := e.resolveTool("golangci-lint")
 	if argv == nil {
 		return nil, NewErrToolUnavailable("golangci-lint")
 	}

@@ -1,0 +1,44 @@
+// Package sample is a fixture for goanalysis tests.
+package sample
+
+import (
+	"fmt"
+
+	"example.com/sample/sub"
+)
+
+// Server serves things.
+type Server struct {
+	// Addr is the listen address.
+	Addr string
+	// Store backs the server.
+	Store sub.Store
+	count int
+}
+
+// NewServer builds a Server.
+func NewServer(addr string) *Server {
+	return &Server{Addr: addr, Store: sub.NewMemStore()}
+}
+
+// Start starts the server.
+func (s *Server) Start() error {
+	s.count++
+	return s.Store.Put(fmt.Sprintf("started:%s", s.Addr))
+}
+
+func (s *Server) reset() { s.count = 0 }
+
+// Handler handles a request.
+type Handler interface {
+	Handle(req string) error
+	internal()
+}
+
+const (
+	// DefaultAddr is the default listen address.
+	DefaultAddr = ":8080"
+	secret      = "x"
+)
+
+var version = "1.0"

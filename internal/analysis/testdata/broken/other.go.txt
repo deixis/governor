@@ -1,0 +1,4 @@
+package main
+
+// Fine has no errors of its own.
+func Fine() int { return 1 }

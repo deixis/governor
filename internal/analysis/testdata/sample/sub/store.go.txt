@@ -1,0 +1,21 @@
+// Package sub holds storage.
+package sub
+
+// Store persists strings.
+type Store interface {
+	Put(s string) error
+}
+
+// MemStore is an in-memory Store.
+type MemStore struct {
+	items []string
+}
+
+// NewMemStore builds a MemStore.
+func NewMemStore() *MemStore { return &MemStore{} }
+
+// Put appends s.
+func (m *MemStore) Put(s string) error {
+	m.items = append(m.items, s)
+	return nil
+}

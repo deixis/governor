@@ -33,7 +33,7 @@ func (e *Engine) RunFixPhase(ctx context.Context, fix bool) (*FixResult, error) 
 
 // runGofumptFix runs gofumpt -w . and returns the number of files modified.
 func (e *Engine) runGofumptFix(ctx context.Context) int {
-	argv := ResolveTool("gofumpt")
+	argv := e.resolveTool("gofumpt")
 	if argv == nil {
 		return 0 // gofumpt not available — skip silently in fix phase
 	}
@@ -45,7 +45,7 @@ func (e *Engine) runGofumptFix(ctx context.Context) int {
 	}
 
 	// gofumpt -w doesn't report what it changed. Count by running -l after.
-	lArgv := ResolveTool("gofumpt")
+	lArgv := e.resolveTool("gofumpt")
 	if lArgv == nil {
 		return 0
 	}
@@ -61,7 +61,7 @@ func (e *Engine) runGofumptFix(ctx context.Context) int {
 
 // runGofumptCheck runs gofumpt -l . and returns unformatted files as FormatIssues.
 func (e *Engine) runGofumptCheck(ctx context.Context) []report.FormatIssue {
-	argv := ResolveTool("gofumpt")
+	argv := e.resolveTool("gofumpt")
 	if argv == nil {
 		return nil
 	}
@@ -88,7 +88,7 @@ func (e *Engine) runGofumptCheck(ctx context.Context) []report.FormatIssue {
 
 // runLintFix runs golangci-lint run --fix and returns the count of fixes applied.
 func (e *Engine) runLintFix(ctx context.Context) int {
-	argv := ResolveTool("golangci-lint")
+	argv := e.resolveTool("golangci-lint")
 	if argv == nil {
 		return 0 // not available — skip silently in fix phase
 	}

@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/deixis/governor"
+	"github.com/deixis/governor/internal/analysis"
 	"github.com/deixis/governor/internal/config"
 	"github.com/deixis/governor/internal/report"
 	"github.com/deixis/governor/internal/runner"
@@ -24,12 +25,11 @@ type handler struct {
 	engine *workflow.Engine
 	runner *runner.Runner // retained for workspace handler and updateWorkspaceFromRoots
 	store  report.Store
-	gopls  *goplsProxy // nil if gopls is not available
+	intel  *analysis.Workspace
 }
 
 // NewServer creates an MCP server with all Governor tools registered.
-// If a goplsProxy is provided, its tools are also registered.
-func NewServer(cfg *config.Config, r *runner.Runner, store report.Store, workspace string, opts ...ServerOption) *mcp.Server {
+func NewServer(cfg *config.Config, r *runner.Runner, store report.Store, workspace string) *mcp.Server {
 	h := &handler{
 		engine: &workflow.Engine{
 			Config:    cfg,
@@ -39,13 +39,8 @@ func NewServer(cfg *config.Config, r *runner.Runner, store report.Store, workspa
 		},
 		runner: r,
 		store:  store,
+		intel:  analysis.NewWorkspace(workspace),
 	}
-
-	var so serverOptions
-	for _, o := range opts {
-		o(&so)
-	}
-	h.gopls = so.gopls
 
 	mcpOpts := &mcp.ServerOptions{
 		Instructions: Instructions,
@@ -88,25 +83,9 @@ Symbol can be an import path (e.g. example.com/foo) for all diagnostics in a pac
 or importpath.Symbol (e.g. example.com/foo.TestAdd) for a specific function.`,
 	}, h.inspectHandler)
 
-	// Register static gopls proxy tools. Each tool returns an actionable
-	// error when gopls is not installed, rather than silently disappearing.
-	registerGoplsTools(s, h)
+	registerIntelTools(s, h)
 
 	return s
-}
-
-// ServerOption configures the Governor MCP server.
-type ServerOption func(*serverOptions)
-
-type serverOptions struct {
-	gopls *goplsProxy
-}
-
-// WithGoplsProxy attaches a gopls proxy to the server.
-func WithGoplsProxy(p *goplsProxy) ServerOption {
-	return func(o *serverOptions) {
-		o.gopls = p
-	}
 }
 
 // updateWorkspaceFromRoots queries the client for MCP roots and updates the
@@ -144,6 +123,9 @@ func (h *handler) updateWorkspaceFromRoots(ctx context.Context, session *mcp.Ser
 	h.engine.Config = loaded.Config
 	h.engine.Workspace = workspace
 	h.engine.RepoRoot = loaded.RepoRoot
+
+	// Update code intelligence.
+	h.intel.SetRoot(workspace)
 }
 
 // textResult is a helper to build a text-only tool result.

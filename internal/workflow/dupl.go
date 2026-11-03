@@ -11,7 +11,7 @@ import (
 )
 
 func (e *Engine) runDupl(ctx context.Context, packages []string) ([]report.Duplicate, error) {
-	argv := ResolveTool("dupl")
+	argv := e.resolveTool("dupl")
 	if argv == nil {
 		return nil, NewErrToolUnavailable("dupl")
 	}

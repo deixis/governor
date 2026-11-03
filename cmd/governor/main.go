@@ -4,8 +4,10 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"os"
@@ -41,6 +43,8 @@ func main() {
 		err = checkMain(args)
 	case "audit":
 		err = auditMain(args)
+	case "fix":
+		err = fixMain(args)
 	case "version":
 		fmt.Println(governor.Version)
 	case "help", "-h", "--help":
@@ -62,6 +66,7 @@ func usage() {
 Commands:
   check       Run the check pipeline (fix, test, lint, staticcheck)
   audit       Run audit checks (coverage, complexity, deadcode, dupl, vulncheck)
+  fix         Repair imports, format, modernise files and report diagnostics
   mcp         Start the MCP server
   version     Print the version
   help        Show this help
@@ -109,22 +114,19 @@ func serve(ctx context.Context, httpAddr string) error {
 		MaxOutput: cfg.MaxOutputBytes(),
 	}
 
-	var opts []govmcp.ServerOption
-	proxy, stopProxy, proxyErr := govmcp.StartGoplsProxy(ctx, workspace)
-	if proxyErr != nil {
-		log.Printf("gopls proxy failed to start: %v", proxyErr)
-	}
-	if proxy != nil {
-		opts = append(opts, govmcp.WithGoplsProxy(proxy))
-		defer stopProxy()
-	}
-
-	server := govmcp.NewServer(cfg, r, store, workspace, opts...)
+	server := govmcp.NewServer(cfg, r, store, workspace)
 
 	if httpAddr != "" {
 		return serveHTTP(ctx, server, httpAddr)
 	}
-	return server.Run(ctx, &mcpsdk.StdioTransport{})
+	// Hold stdin EOF until pending responses are written: a client that
+	// sends a request and closes its end must still get the reply.
+	err = server.Run(ctx, govmcp.NewDrainingTransport(&mcpsdk.StdioTransport{}, govmcp.DefaultDrainTimeout))
+	if errors.Is(err, io.EOF) {
+		// Client closed stdin: normal shutdown, not a failure.
+		return nil
+	}
+	return err
 }
 
 func serveHTTP(ctx context.Context, server *mcpsdk.Server, addr string) error {

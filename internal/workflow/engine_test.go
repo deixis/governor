@@ -86,3 +86,46 @@ func TestResolvePackages_RepoRootFallback(t *testing.T) {
 		t.Errorf("ResolvePackages(empty RepoRoot) = %v, want [./pkg/foo/...]", got)
 	}
 }
+
+// noTools is a ToolResolver reporting every tool as unavailable, so tests
+// do not depend on what is installed on the host.
+func noTools(string) []string { return nil }
+
+func TestHasModuleTool(t *testing.T) {
+	out := "asm\ncgo\ncompile\ncover\nvet\ngolang.org/x/tools/gopls\nhonnef.co/go/tools/cmd/staticcheck\n"
+	cases := []struct {
+		name string
+		want bool
+	}{
+		{"gopls", true},
+		{"staticcheck", true},
+		{"vet", false},   // built-in, not a module tool
+		{"cover", false}, // built-in
+		{"gocognit", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := hasModuleTool(out, c.name); got != c.want {
+			t.Errorf("hasModuleTool(%q) = %v, want %v", c.name, got, c.want)
+		}
+	}
+}
+
+func TestResolveTool_MissingNotResolvedViaGoTool(t *testing.T) {
+	// A name that is neither a module tool nor on PATH must resolve to
+	// nil, not to a dead "go tool <name>" invocation.
+	if got := ResolveTool(t.TempDir(), "governor-no-such-tool-xyz"); got != nil {
+		t.Errorf("ResolveTool = %v, want nil", got)
+	}
+}
+
+func TestEngine_ResolveToolUsesInjectedResolver(t *testing.T) {
+	e := &Engine{ToolResolver: func(name string) []string { return []string{"/stub/" + name} }}
+	if got := e.resolveTool("dupl"); len(got) != 1 || got[0] != "/stub/dupl" {
+		t.Errorf("resolveTool = %v", got)
+	}
+	e.ToolResolver = noTools
+	if got := e.resolveTool("dupl"); got != nil {
+		t.Errorf("resolveTool with noTools = %v, want nil", got)
+	}
+}
