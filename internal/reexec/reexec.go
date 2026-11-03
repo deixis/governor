@@ -28,8 +28,9 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
-	"runtime/debug"
 	"strings"
+
+	"github.com/deixis/governor"
 )
 
 // ImportPath is the main package of the governor binary.
@@ -115,7 +116,7 @@ func Maybe(dir string, args []string) error {
 		return nil
 	}
 
-	p := probe{self: runtime.Version(), modVersion: moduleVersion()}
+	p := probe{self: runtime.Version(), modVersion: governor.Version}
 	if out, err := run(goBin, dir, nil, "tool"); err == nil {
 		p.goToolList = out
 	}
@@ -165,14 +166,6 @@ func ensureBuild(goBin, goVersion, modVersion string) (string, error) {
 		return "", fmt.Errorf("building governor with %s: binary not found at %s", goVersion, bin)
 	}
 	return bin, nil
-}
-
-func moduleVersion() string {
-	info, ok := debug.ReadBuildInfo()
-	if !ok {
-		return ""
-	}
-	return info.Main.Version
 }
 
 // run executes goBin with args in dir and returns its combined output.

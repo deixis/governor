@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -48,15 +49,20 @@ func (c *Config) MaxOutputBytes() int {
 	return DefaultMaxOutput
 }
 
+// Every step takes an Exclude list: package patterns (e.g. ./e2e/...)
+// subtracted from the selection for that step only.
+
 // TestConfig controls how gov_test is executed.
 type TestConfig struct {
-	Args []string `yaml:"args"` // extra flags appended to go test -json (e.g. -race, -count=1)
+	Args    []string `yaml:"args"` // extra flags appended to go test -json (e.g. -race, -count=1)
+	Exclude []string `yaml:"exclude"`
 }
 
 // LintConfig controls how gov_lint is executed.
 type LintConfig struct {
-	Config string   `yaml:"config"` // path to golangci-lint config file
-	Args   []string `yaml:"args"`   // extra flags (e.g. --timeout=5m)
+	Config  string   `yaml:"config"` // path to golangci-lint config file
+	Args    []string `yaml:"args"`   // extra flags (e.g. --timeout=5m)
+	Exclude []string `yaml:"exclude"`
 }
 
 // CheckConfig defines the steps for gov_check.
@@ -66,8 +72,9 @@ type CheckConfig struct {
 
 // StaticcheckConfig controls how staticcheck is executed.
 type StaticcheckConfig struct {
-	Checks []string `yaml:"checks"` // e.g. ["all", "-ST1000"]
-	Args   []string `yaml:"args"`   // extra flags
+	Checks  []string `yaml:"checks"` // e.g. ["all", "-ST1000"]
+	Args    []string `yaml:"args"`   // extra flags
+	Exclude []string `yaml:"exclude"`
 }
 
 // AuditConfig defines the steps and per-check settings for gov_audit.
@@ -82,28 +89,33 @@ type AuditConfig struct {
 
 // VulncheckConfig controls how govulncheck is executed.
 type VulncheckConfig struct {
-	Args []string `yaml:"args"` // extra flags for govulncheck
+	Args    []string `yaml:"args"` // extra flags for govulncheck
+	Exclude []string `yaml:"exclude"`
 }
 
 // CoverageConfig controls how test coverage is collected.
 type CoverageConfig struct {
-	Args []string `yaml:"args"` // extra flags for go test -coverprofile
+	Args    []string `yaml:"args"` // extra flags for go test -coverprofile
+	Exclude []string `yaml:"exclude"`
 }
 
 // ComplexityConfig controls how cognitive complexity is measured.
 type ComplexityConfig struct {
-	Args []string `yaml:"args"` // extra flags for gocognit
+	Args    []string `yaml:"args"` // extra flags for gocognit
+	Exclude []string `yaml:"exclude"`
 }
 
 // DeadcodeConfig controls how dead code detection is run.
 type DeadcodeConfig struct {
-	Args []string `yaml:"args"` // extra flags for deadcode
+	Args    []string `yaml:"args"` // extra flags for deadcode
+	Exclude []string `yaml:"exclude"`
 }
 
 // DuplConfig controls how duplicate code detection is run.
 type DuplConfig struct {
 	Threshold int      `yaml:"threshold"` // minimum token length (default: 50)
 	Args      []string `yaml:"args"`      // extra flags for dupl
+	Exclude   []string `yaml:"exclude"`
 }
 
 // DefaultCheckSteps are used when no steps are configured.
@@ -142,9 +154,14 @@ type LoadResult struct {
 	RepoRoot string // directory containing go.mod; falls back to workspace
 }
 
-// Load reads the .governor file from the repository root.
-// The repository root is discovered by walking upward from workspace
-// looking for go.mod. If no .governor file exists, a default Config is returned.
+// FileNames lists the accepted config file names, in lookup order.
+var FileNames = []string{".governor", ".governor.yaml", ".governor.yml"}
+
+// Load reads the config file from the repository root. The repository
+// root is discovered by walking upward from workspace looking for go.mod.
+// Any name in FileNames is accepted; more than one present is an error,
+// since a silently ignored file is worse than no file. With no file, a
+// default Config is returned.
 func Load(workspace string) (*LoadResult, error) {
 	root, err := findRepoRoot(workspace)
 	if err != nil {
@@ -152,18 +169,29 @@ func Load(workspace string) (*LoadResult, error) {
 		root = workspace
 	}
 
-	path := filepath.Join(root, ".governor")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return &LoadResult{Config: &Config{}, RepoRoot: root}, nil
+	var found []string
+	for _, name := range FileNames {
+		if _, err := os.Stat(filepath.Join(root, name)); err == nil {
+			found = append(found, name)
 		}
-		return nil, fmt.Errorf("reading .governor: %w", err)
+	}
+	switch len(found) {
+	case 0:
+		return &LoadResult{Config: &Config{}, RepoRoot: root}, nil
+	case 1:
+	default:
+		return nil, fmt.Errorf("multiple config files in %s: %s; keep one", root, strings.Join(found, ", "))
+	}
+
+	name := found[0]
+	data, err := os.ReadFile(filepath.Join(root, name))
+	if err != nil {
+		return nil, fmt.Errorf("reading %s: %w", name, err)
 	}
 
 	cfg := &Config{}
 	if err := yaml.Unmarshal(data, cfg); err != nil {
-		return nil, fmt.Errorf("parsing .governor: %w", err)
+		return nil, fmt.Errorf("parsing %s: %w", name, err)
 	}
 	return &LoadResult{Config: cfg, RepoRoot: root}, nil
 }

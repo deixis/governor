@@ -3,6 +3,7 @@ package analysis
 import (
 	"context"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -27,7 +28,7 @@ func TestDiagnostics_TypeErrors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := FormatDiagnostics(diags)
+	text := FormatDiagnostics(diags, 0)
 	for _, want := range []string{"main.go:4:14", "undefined: undefinedFn", "cannot use"} {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q in:\n%s", want, text)
@@ -41,6 +42,48 @@ func TestDiagnostics_TypeErrors(t *testing.T) {
 	}
 	if len(diags) != 0 {
 		t.Errorf("expected no diagnostics for other.go, got %+v", diags)
+	}
+}
+
+func TestFormatDiagnostics_GroupsRepeatedMessages(t *testing.T) {
+	var diags []Diagnostic
+	for i := range 20 {
+		diags = append(diags, Diagnostic{Position: "a.go:" + strconv.Itoa(i) + ":1", Package: "example.com/a", Message: "could not import x (export data version 5)"})
+	}
+	diags = append(diags, Diagnostic{Position: "b.go:1:1", Message: "undefined: y"})
+
+	text := FormatDiagnostics(diags, 0)
+	for _, want := range []string{
+		"21 diagnostic(s), 2 distinct message(s):",
+		"could not import x (export data version 5) (20 sites)",
+		"  a.go:0:1 [example.com/a]",
+		"  ... and 15 more",
+		"b.go:1:1: undefined: y",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "a.go:5:1") {
+		t.Errorf("listed more than %d positions:\n%s", maxPositionsPerMessage, text)
+	}
+}
+
+func TestFormatDiagnostics_Truncates(t *testing.T) {
+	var diags []Diagnostic
+	for i := range 200 {
+		diags = append(diags, Diagnostic{Position: "a.go:1:1", Message: "message number " + strconv.Itoa(i)})
+	}
+
+	text := FormatDiagnostics(diags, 500)
+	if len(text) > 600 {
+		t.Errorf("len = %d, want about 500", len(text))
+	}
+	if !strings.Contains(text, "output truncated at 500 bytes") {
+		t.Errorf("missing truncation note:\n%s", text)
+	}
+	if FormatDiagnostics(diags[:1], 500) != FormatDiagnostics(diags[:1], 0) {
+		t.Error("short output must not be truncated")
 	}
 }
 

@@ -249,19 +249,71 @@ func relativePos(root, pos string) string {
 	return relPath(root, file) + strings.TrimPrefix(pos, file)
 }
 
+// maxPositionsPerMessage bounds how many sites are listed for one
+// repeated message. One root cause (a broken import, say) can surface at
+// hundreds of positions; the agent needs the message and a few examples,
+// not every site.
+const maxPositionsPerMessage = 5
+
 // FormatDiagnostics renders diagnostics as plain text for an agent.
-func FormatDiagnostics(diags []Diagnostic) string {
+// Diagnostics with the same message are grouped, in first-seen order,
+// with up to maxPositionsPerMessage positions each. The output is cut at
+// limit bytes (no limit when <= 0) with a note on what was dropped.
+func FormatDiagnostics(diags []Diagnostic, limit int) string {
 	if len(diags) == 0 {
 		return "No diagnostics."
 	}
-	var b strings.Builder
-	fmt.Fprintf(&b, "%d diagnostic(s):\n", len(diags))
-	for _, d := range diags {
-		fmt.Fprintf(&b, "%s: %s", d.Position, d.Message)
-		if d.Package != "" {
-			fmt.Fprintf(&b, " [%s]", d.Package)
-		}
-		b.WriteByte('\n')
+
+	type group struct {
+		message   string
+		positions []string
+		count     int
 	}
-	return b.String()
+	var groups []*group
+	byMessage := map[string]*group{}
+	for _, d := range diags {
+		g := byMessage[d.Message]
+		if g == nil {
+			g = &group{message: d.Message}
+			byMessage[d.Message] = g
+			groups = append(groups, g)
+		}
+		g.count++
+		if len(g.positions) < maxPositionsPerMessage {
+			pos := d.Position
+			if d.Package != "" {
+				pos += " [" + d.Package + "]"
+			}
+			g.positions = append(g.positions, pos)
+		}
+	}
+
+	var b strings.Builder
+	fmt.Fprintf(&b, "%d diagnostic(s), %d distinct message(s):\n", len(diags), len(groups))
+	for _, g := range groups {
+		if g.count == 1 {
+			fmt.Fprintf(&b, "%s: %s\n", g.positions[0], g.message)
+			continue
+		}
+		fmt.Fprintf(&b, "%s (%d sites)\n", g.message, g.count)
+		for _, pos := range g.positions {
+			fmt.Fprintf(&b, "  %s\n", pos)
+		}
+		if g.count > len(g.positions) {
+			fmt.Fprintf(&b, "  ... and %d more\n", g.count-len(g.positions))
+		}
+	}
+	return truncate(b.String(), limit)
+}
+
+// truncate cuts s at the last line break before limit bytes and says so.
+func truncate(s string, limit int) string {
+	if limit <= 0 || len(s) <= limit {
+		return s
+	}
+	cut := strings.LastIndexByte(s[:limit], '\n')
+	if cut <= 0 {
+		cut = limit
+	}
+	return s[:cut] + fmt.Sprintf("\n... output truncated at %d bytes (%d dropped); pass files to narrow the scope.\n", limit, len(s)-cut)
 }

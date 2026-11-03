@@ -13,7 +13,10 @@ import (
 )
 
 func (e *Engine) runCoverage(ctx context.Context, packages []string) ([]report.CoverageEntry, error) {
-	pkgs := e.ResolvePackages(packages)
+	pkgs, err := e.Packages(ctx, packages, e.Config.Audit.Coverage.Exclude)
+	if err != nil {
+		return nil, err
+	}
 
 	// Create a temp file for the cover profile.
 	f, err := os.CreateTemp("", "governor-cover-*.out")
@@ -56,7 +59,7 @@ var coverFuncLine = regexp.MustCompile(`^(.+):(\d+):\s+(\S+)\s+(\d+\.\d+)%$`)
 func parseCoverFunc(data []byte) []report.CoverageEntry {
 	var entries []report.CoverageEntry
 
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue
@@ -81,7 +84,7 @@ func parseCoverFunc(data []byte) []report.CoverageEntry {
 		pkg := derivePackageFromFile(file)
 
 		relFile := file
-		if idx := strings.Index(file, "/"); idx >= 0 {
+		if found := strings.Contains(file, "/"); found {
 			relFile = file
 		}
 

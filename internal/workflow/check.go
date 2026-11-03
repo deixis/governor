@@ -35,7 +35,7 @@ func (e *Engine) Check(ctx context.Context, packages []string, fix bool) (*Check
 	rr := &report.RunResult{ID: runID, Kind: report.Check}
 
 	// --- Fix phase ---
-	fixRes, err := e.RunFixPhase(ctx, fix)
+	fixRes, err := e.RunFixPhase(ctx, pkgs, fix)
 	if err != nil {
 		return nil, err
 	}

@@ -191,7 +191,7 @@ For local development of the plugin, start Claude Code with `claude --plugin-dir
 
 ## Configuration
 
-Governor can read optional configuration settings from a `.governor` YAML file located at the repository root.
+Governor can read optional configuration settings from a `.governor`, `.governor.yaml` or `.governor.yml` file located at the repository root. Keep one; several is an error.
 
 ```yaml
 version: 1
@@ -200,6 +200,9 @@ max_output: 1048576
 
 test:
   args: ["-race", "-count=1"]
+  # Package patterns left out of this step. Every step (test, lint,
+  # staticcheck, and each audit check) takes its own exclude list.
+  exclude: ["./e2e/scenario/..."]
 
 lint:
   config: .golangci.yml

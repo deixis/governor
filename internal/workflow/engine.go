@@ -91,6 +91,88 @@ func (e *Engine) ResolvePackages(packages []string) []string {
 	return resolved
 }
 
+// Packages resolves package arguments like ResolvePackages and then
+// subtracts the exclude patterns, which come from the calling step's
+// config. Without excludes the patterns pass through untouched. With
+// excludes both sides are expanded through `go list`, and the result is
+// the explicit import paths that remain.
+func (e *Engine) Packages(ctx context.Context, packages, exclude []string) ([]string, error) {
+	pkgs := e.ResolvePackages(packages)
+	if len(exclude) == 0 {
+		return pkgs, nil
+	}
+
+	included, err := e.listImportPaths(ctx, pkgs)
+	if err != nil {
+		return nil, err
+	}
+	excluded, err := e.listImportPaths(ctx, exclude)
+	if err != nil {
+		return nil, err
+	}
+	skip := make(map[string]bool, len(excluded))
+	for _, p := range excluded {
+		skip[p] = true
+	}
+	kept := included[:0]
+	for _, p := range included {
+		if !skip[p] {
+			kept = append(kept, p)
+		}
+	}
+	if len(kept) == 0 {
+		return nil, fmt.Errorf("no packages left after exclude %v", exclude)
+	}
+	return kept, nil
+}
+
+// listImportPaths expands package patterns to import paths with go list.
+func (e *Engine) listImportPaths(ctx context.Context, patterns []string) ([]string, error) {
+	argv := append([]string{"go", "list", "-f", "{{.ImportPath}}"}, patterns...)
+	res, err := e.Runner.Run(ctx, argv, "")
+	if err != nil {
+		return nil, fmt.Errorf("listing packages: %w", err)
+	}
+	if res.ExitCode != 0 {
+		return nil, fmt.Errorf("go list %s failed (exit %d): %s", strings.Join(patterns, " "), res.ExitCode, strings.TrimSpace(string(res.Stderr)))
+	}
+	return nonEmptyLines(res.Stdout), nil
+}
+
+// goFilesTemplate makes go list print every Go file of a package, one
+// absolute path per line, test files included.
+const goFilesTemplate = `{{$d := .Dir}}` +
+	`{{range .GoFiles}}{{$d}}/{{.}}{{"\n"}}{{end}}` +
+	`{{range .CgoFiles}}{{$d}}/{{.}}{{"\n"}}{{end}}` +
+	`{{range .TestGoFiles}}{{$d}}/{{.}}{{"\n"}}{{end}}` +
+	`{{range .XTestGoFiles}}{{$d}}/{{.}}{{"\n"}}{{end}}`
+
+// PackageFiles lists the Go source files of the given packages, so that
+// file-based tools (gofumpt, dupl) cover exactly the package scope and
+// not every .go file under the workspace, worktrees and vendored copies
+// included.
+func (e *Engine) PackageFiles(ctx context.Context, pkgs []string) ([]string, error) {
+	argv := append([]string{"go", "list", "-f", goFilesTemplate}, pkgs...)
+	res, err := e.Runner.Run(ctx, argv, "")
+	if err != nil {
+		return nil, fmt.Errorf("listing package files: %w", err)
+	}
+	if res.ExitCode != 0 {
+		return nil, fmt.Errorf("go list failed (exit %d): %s", res.ExitCode, strings.TrimSpace(string(res.Stderr)))
+	}
+	return nonEmptyLines(res.Stdout), nil
+}
+
+func nonEmptyLines(out []byte) []string {
+	var lines []string
+	for line := range strings.SplitSeq(string(out), "\n") {
+		if line = strings.TrimSpace(line); line != "" {
+			lines = append(lines, line)
+		}
+	}
+	return lines
+}
+
 // ResolveTool returns the argv prefix for invoking a named tool from dir.
 // It checks the module's tool directives first (Go 1.24+, listed by
 // `go tool` with no arguments), then falls back to exec.LookPath on the

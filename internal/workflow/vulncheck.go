@@ -15,9 +15,13 @@ func (e *Engine) runVulncheck(ctx context.Context, packages []string) ([]report.
 		return nil, NewErrToolUnavailable("govulncheck")
 	}
 
+	pkgs, err := e.Packages(ctx, packages, e.Config.Audit.Vulncheck.Exclude)
+	if err != nil {
+		return nil, err
+	}
 	argv = append(argv, "-json")
 	argv = append(argv, e.Config.Audit.Vulncheck.Args...)
-	argv = append(argv, e.ResolvePackages(packages)...)
+	argv = append(argv, pkgs...)
 
 	result, err := e.Runner.Run(ctx, argv, "")
 	if err != nil {
@@ -53,7 +57,7 @@ func parseGovulncheckOutput(data []byte) []report.Vuln {
 	osvSummaries := make(map[string]string)
 	var findings []*govulncheckFinding
 
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue

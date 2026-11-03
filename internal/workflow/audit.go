@@ -43,8 +43,7 @@ func (e *Engine) Audit(ctx context.Context, packages []string) (*AuditResult, er
 		case "coverage":
 			entries, err := e.runCoverage(ctx, pkgs)
 			if err != nil {
-				var unavail ErrToolUnavailable
-				if errors.As(err, &unavail) {
+				if _, ok := errors.AsType[ErrToolUnavailable](err); ok {
 					results[i] = AuditStepResult{Name: step, Status: "unavailable", Detail: err.Error()}
 				} else {
 					results[i] = AuditStepResult{Name: step, Status: "error", Detail: err.Error()}
@@ -57,8 +56,7 @@ func (e *Engine) Audit(ctx context.Context, packages []string) (*AuditResult, er
 		case "complexity":
 			entries, err := e.runComplexity(ctx, pkgs)
 			if err != nil {
-				var unavail ErrToolUnavailable
-				if errors.As(err, &unavail) {
+				if _, ok := errors.AsType[ErrToolUnavailable](err); ok {
 					results[i] = AuditStepResult{Name: step, Status: "unavailable", Detail: err.Error()}
 				} else {
 					results[i] = AuditStepResult{Name: step, Status: "error", Detail: err.Error()}
@@ -71,8 +69,7 @@ func (e *Engine) Audit(ctx context.Context, packages []string) (*AuditResult, er
 		case "deadcode":
 			funcs, err := e.runDeadcode(ctx, pkgs)
 			if err != nil {
-				var unavail ErrToolUnavailable
-				if errors.As(err, &unavail) {
+				if _, ok := errors.AsType[ErrToolUnavailable](err); ok {
 					results[i] = AuditStepResult{Name: step, Status: "unavailable", Detail: err.Error()}
 				} else {
 					results[i] = AuditStepResult{Name: step, Status: "error", Detail: err.Error()}
@@ -85,8 +82,7 @@ func (e *Engine) Audit(ctx context.Context, packages []string) (*AuditResult, er
 		case "dupl":
 			duplicates, err := e.runDupl(ctx, pkgs)
 			if err != nil {
-				var unavail ErrToolUnavailable
-				if errors.As(err, &unavail) {
+				if _, ok := errors.AsType[ErrToolUnavailable](err); ok {
 					results[i] = AuditStepResult{Name: step, Status: "unavailable", Detail: err.Error()}
 				} else {
 					results[i] = AuditStepResult{Name: step, Status: "error", Detail: err.Error()}
@@ -99,8 +95,7 @@ func (e *Engine) Audit(ctx context.Context, packages []string) (*AuditResult, er
 		case "vulncheck":
 			vulns, err := e.runVulncheck(ctx, pkgs)
 			if err != nil {
-				var unavail ErrToolUnavailable
-				if errors.As(err, &unavail) {
+				if _, ok := errors.AsType[ErrToolUnavailable](err); ok {
 					results[i] = AuditStepResult{Name: step, Status: "unavailable", Detail: err.Error()}
 				} else {
 					results[i] = AuditStepResult{Name: step, Status: "error", Detail: err.Error()}
