@@ -1,12 +1,24 @@
 {
   "name": "governor",
-  "version": "0.1.0",
-  "description": "Go code intelligence and checks via the Governor MCP server, with gov_fix run automatically after every edit to a .go file.",
+  "version": "0.2.0",
+  "description": "Go code intelligence, refactor planning and checks via the Governor MCP server. Hooks run gov_fix after every edit to a .go file and steer go test, vet, lint and in-place text edits of Go files to governor.",
   "author": {
     "name": "deixis"
   },
   "homepage": "https://github.com/deixis/governor",
   "repository": "https://github.com/deixis/governor",
   "license": "MIT",
-  "keywords": ["go", "golang", "mcp", "lint", "gofumpt", "modernize"]
+  "keywords": [
+    "go",
+    "golang",
+    "mcp",
+    "code-intelligence",
+    "refactor",
+    "test",
+    "lint",
+    "golangci-lint",
+    "staticcheck",
+    "gofumpt",
+    "modernize"
+  ]
 }

@@ -10,7 +10,7 @@
     {
       "name": "governor",
       "source": "./plugins/claude-code",
-      "description": "Governor MCP server plus a PostToolUse hook that runs governor fix on every edited Go file."
+      "description": "Governor MCP server, a PostToolUse hook that runs governor fix on every edited Go file, and a PreToolUse hook that rewrites go test, vet, lint and formatter commands to governor."
     }
   ]
 }
