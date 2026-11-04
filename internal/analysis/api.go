@@ -13,9 +13,10 @@ import (
 )
 
 // PackageAPI renders the exported declarations of each package in Go
-// syntax, keeping doc comments and dropping function bodies. Unknown import
-// paths produce an inline note rather than an error so one bad path does
-// not hide the others.
+// syntax, keeping doc comments and dropping function bodies. Import paths
+// outside the workspace (standard library, dependencies) are loaded on
+// demand. Unknown import paths produce an inline note rather than an
+// error so one bad path does not hide the others.
 func (w *Workspace) PackageAPI(ctx context.Context, importPaths []string) (string, error) {
 	snap, err := w.load(ctx)
 	if err != nil {
@@ -37,8 +38,12 @@ func (w *Workspace) PackageAPI(ctx context.Context, importPaths []string) (strin
 		}
 		p, ok := byPath[path]
 		if !ok {
-			fmt.Fprintf(&b, "// package %s: not found in workspace\n", path)
-			continue
+			ext, err := snap.externalPackage(ctx, path)
+			if err != nil {
+				fmt.Fprintf(&b, "// %v\n", err)
+				continue
+			}
+			p = ext
 		}
 		fmt.Fprintf(&b, "// import %q\n", p.PkgPath)
 		fmt.Fprintf(&b, "package %s\n\n", p.Name)

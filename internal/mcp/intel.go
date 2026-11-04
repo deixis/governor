@@ -173,9 +173,11 @@ Type-checked in process; the first call after a source change reloads the worksp
 
 	sdkmcp.AddTool(s, &sdkmcp.Tool{
 		Name: "gov_package_api",
-		Description: `Exported API of one or more workspace packages, in Go syntax.
+		Description: `Exported API of one or more packages, in Go syntax.
 
-Pass "packagePaths" (Go import paths). Function bodies and unexported members are omitted.`,
+Pass "packagePaths" (Go import paths): workspace packages, the standard library or any
+go.mod dependency. Function bodies and unexported members are omitted. Use this instead
+of go doc or reading module cache sources.`,
 	}, h.packageAPIHandler)
 
 	sdkmcp.AddTool(s, &sdkmcp.Tool{
@@ -207,7 +209,8 @@ The definition is listed first.`,
 		Description: `Where a symbol is declared, with its signature and doc comment.
 
 Pass "file" (absolute path) and "symbol" (Foo, T.Method, T.Field, or pkg.Symbol).
-Use this instead of grepping for a declaration.`,
+pkg.Symbol reaches into the standard library and dependencies imported by the file.
+Use this instead of grepping for a declaration or running go doc.`,
 	}, h.definitionHandler)
 
 	sdkmcp.AddTool(s, &sdkmcp.Tool{
@@ -247,7 +250,8 @@ Call after every edit instead of gov_diagnostics; it is a superset.`,
 		Name: "gov_outline",
 		Description: `Top-level declarations of a file or package with line ranges, no bodies.
 
-Pass "target": an absolute .go path or a package import path. Read this before opening
-a large file to decide which line range to read.`,
+Pass "target": an absolute .go path or a package import path, including the standard
+library and go.mod dependencies. Read this before opening a large file to decide which
+line range to read.`,
 	}, h.outlineHandler)
 }

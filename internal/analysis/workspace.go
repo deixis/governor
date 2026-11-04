@@ -51,6 +51,22 @@ type snapshot struct {
 	// left out (unparsable package clause) is told apart from one outside
 	// the workspace.
 	dirs map[string]bool
+
+	// external caches packages outside the workspace (standard library,
+	// module dependencies) loaded with syntax on demand, by import path.
+	// A failed load is cached too so a bad path costs one `go list`.
+	// extMu guards the map only; each entry has its own lock so loads of
+	// different packages run in parallel.
+	extMu    sync.Mutex
+	external map[string]*externalLoad
+}
+
+// externalLoad is one cached on-demand load.
+type externalLoad struct {
+	mu   sync.Mutex
+	done bool
+	pkg  *packages.Package
+	err  error
 }
 
 // Workspace loads and caches type information for a Go module tree.
@@ -143,6 +159,70 @@ func (w *Workspace) load(ctx context.Context) (*snapshot, error) {
 	}
 	w.snap = snap
 	return snap, nil
+}
+
+// externalPackage loads importPath with syntax, resolved from the
+// workspace module so it reaches the standard library and every go.mod
+// dependency. Tests are excluded. Workspace packages are not served here;
+// callers check the snapshot first.
+func (s *snapshot) externalPackage(ctx context.Context, importPath string) (*packages.Package, error) {
+	s.extMu.Lock()
+	if s.external == nil {
+		s.external = make(map[string]*externalLoad)
+	}
+	e, ok := s.external[importPath]
+	if !ok {
+		e = &externalLoad{}
+		s.external[importPath] = e
+	}
+	s.extMu.Unlock()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.done {
+		return e.pkg, e.err
+	}
+	pkg, err := loadExternal(ctx, s.root, s.fset, importPath)
+	if err != nil && ctx.Err() != nil {
+		// A cancelled or expired call says nothing about the package;
+		// the next caller retries.
+		return nil, err
+	}
+	e.pkg, e.err, e.done = pkg, err, true
+	return pkg, err
+}
+
+// loadExternal loads one package by exact import path. Patterns are
+// rejected up front: `...`, `all`, `std` or `cmd` would parse and
+// type-check hundreds of packages before the single-package check fails.
+func loadExternal(ctx context.Context, root string, fset *token.FileSet, importPath string) (*packages.Package, error) {
+	switch {
+	case importPath == "", importPath == "all", importPath == "std", importPath == "cmd",
+		strings.HasPrefix(importPath, "."), strings.Contains(importPath, "..."),
+		strings.Contains(importPath, "="), strings.ContainsAny(importPath, " \t\n"):
+		return nil, fmt.Errorf("package %q: not an import path", importPath)
+	}
+	cfg := &packages.Config{
+		Context: ctx,
+		Mode:    loadMode,
+		Dir:     root,
+		Fset:    fset,
+	}
+	pkgs, err := packages.Load(cfg, importPath)
+	if err != nil {
+		return nil, fmt.Errorf("loading package %s: %w", importPath, err)
+	}
+	if len(pkgs) != 1 {
+		return nil, fmt.Errorf("package %s: pattern matched %d packages", importPath, len(pkgs))
+	}
+	p := pkgs[0]
+	if len(p.Syntax) == 0 {
+		if len(p.Errors) > 0 {
+			return nil, fmt.Errorf("package %s: %s", importPath, p.Errors[0].Msg)
+		}
+		return nil, fmt.Errorf("package %s: no Go source", importPath)
+	}
+	return p, nil
 }
 
 // variantRank orders package variants: plain package, then in-package

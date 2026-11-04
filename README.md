@@ -150,12 +150,12 @@ The working directory is set to the workspace root automatically.
 
 ### Code intelligence
 
-Backed by an in-process, cached `go/packages` load of the workspace. The first call after a source change reloads; later calls hit the cache.
+Backed by an in-process, cached `go/packages` load of the workspace. The first call after a source change reloads; later calls hit the cache. `gov_outline`, `gov_package_api` and `gov_definition` also reach the standard library and go.mod dependencies: a package outside the workspace is loaded with source on first use and cached with the snapshot.
 
 | Tool | Description |
 |---|---|
 | `gov_diagnostics` | Parse, build and type errors |
-| `gov_package_api` | Exported API of packages in Go syntax |
+| `gov_package_api` | Exported API of packages in Go syntax, workspace or dependency |
 | `gov_search` | Fuzzy symbol search |
 | `gov_file_context` | Cross-file and cross-package dependencies of a file |
 | `gov_symbol_references` | Find symbol references |
@@ -163,7 +163,7 @@ Backed by an in-process, cached `go/packages` load of the workspace. The first c
 | `gov_implementations` | Interface satisfaction, both directions, type or method level |
 | `gov_callers` | Static call sites of a function with their enclosing function |
 | `gov_callees` | Calls made inside a function body |
-| `gov_outline` | Top-level declarations of a file or package with line ranges |
+| `gov_outline` | Top-level declarations of a file or package with line ranges, workspace or dependency |
 | `gov_fix` | Repair imports, gofumpt, modernize rewrites, then diagnostics for the files |
 
 ### Fix on every edit

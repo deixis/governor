@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -24,7 +25,7 @@ func TestPackageAPI(t *testing.T) {
 		"DefaultAddr = \":8080\"",
 		"// Server serves things.",
 		"1 unexported field(s)",
-		"not found in workspace",
+		"// package example.com/nope: ",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("missing %q in:\n%s", want, out)
@@ -33,6 +34,45 @@ func TestPackageAPI(t *testing.T) {
 	for _, unwanted := range []string{"reset()", "secret", "version", "internal()", "s.count++"} {
 		if strings.Contains(out, unwanted) {
 			t.Errorf("unexpected %q in:\n%s", unwanted, out)
+		}
+	}
+}
+
+func TestPackageAPI_External(t *testing.T) {
+	ws := NewWorkspace(copyFixture(t, "sample"))
+	out, err := ws.PackageAPI(context.Background(), []string{"io", "golang.org/x/tools/go/packages"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"// import \"io\"\npackage io\n",
+		"type Reader interface",
+		"// Reader is the interface that wraps the basic Read method.",
+		"// package golang.org/x/tools/go/packages: ",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+	if strings.Contains(out, "func (r *LimitedReader) Read(p []byte) (n int, err error) {") {
+		t.Errorf("body leaked:\n%s", out)
+	}
+}
+
+// A go.mod dependency, resolved from this module's own go.mod.
+func TestPackageAPI_Dependency(t *testing.T) {
+	ws := NewWorkspace(filepath.Join("..", ".."))
+	out, err := ws.PackageAPI(context.Background(), []string{"golang.org/x/tools/go/packages"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"package packages\n",
+		"func Load(cfg *Config, patterns ...string) ([]*Package, error)",
+		"// Load loads and returns the Go packages named by the given patterns.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
 		}
 	}
 }
