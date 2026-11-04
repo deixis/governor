@@ -7,6 +7,7 @@ import (
 	"go/ast"
 	"go/printer"
 	"go/token"
+	"path/filepath"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -35,6 +36,15 @@ func (w *Workspace) PackageAPI(ctx context.Context, importPaths []string) (strin
 	for i, path := range importPaths {
 		if i > 0 {
 			b.WriteString("\n")
+		}
+		// A file or directory path stands for the package in that directory.
+		if strings.HasSuffix(path, ".go") || filepath.IsAbs(path) {
+			pkgPath, err := snap.packageInDir(path)
+			if err != nil {
+				fmt.Fprintf(&b, "// %v\n", err)
+				continue
+			}
+			path = pkgPath
 		}
 		p, ok := byPath[path]
 		if !ok {

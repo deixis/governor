@@ -3,39 +3,14 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/deixis/governor/internal/analysis"
 	sdkmcp "github.com/modelcontextprotocol/go-sdk/mcp"
 )
 
 // Code intelligence tools, backed by the in-process analysis package.
-
-type diagnosticsParams struct {
-	Files []string `json:"files,omitempty" jsonschema:"Optional absolute paths; when set, only errors in these files are reported."`
-}
-
-func (h *handler) diagnosticsHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p diagnosticsParams) (*sdkmcp.CallToolResult, any, error) {
-	diags, err := h.intel.Diagnostics(ctx, p.Files)
-	if err != nil {
-		return errorResult(fmt.Sprintf("diagnostics failed: %v", err))
-	}
-	return textResult(analysis.FormatDiagnostics(diags, h.engine.Config.MaxOutputBytes()))
-}
-
-type packageAPIParams struct {
-	PackagePaths []string `json:"packagePaths" jsonschema:"Go import paths of the packages to summarise."`
-}
-
-func (h *handler) packageAPIHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p packageAPIParams) (*sdkmcp.CallToolResult, any, error) {
-	if len(p.PackagePaths) == 0 {
-		return errorResult("packagePaths is required")
-	}
-	out, err := h.intel.PackageAPI(ctx, p.PackagePaths)
-	if err != nil {
-		return errorResult(fmt.Sprintf("package api failed: %v", err))
-	}
-	return textResult(out)
-}
 
 type searchParams struct {
 	Query string `json:"query" jsonschema:"Fuzzy search query for symbol names."`
@@ -65,79 +40,106 @@ func (h *handler) fileContextHandler(ctx context.Context, _ *sdkmcp.CallToolRequ
 }
 
 type symbolParams struct {
-	File   string `json:"file" jsonschema:"Absolute path to a file in the package where the symbol is visible."`
-	Symbol string `json:"symbol" jsonschema:"Symbol name: Foo, T.Method, T.Field, or pkg.Symbol (pkg is an import name in the file)."`
+	File   string   `json:"file" jsonschema:"Absolute path to a file in the package where the symbol is visible."`
+	Symbol string   `json:"symbol" jsonschema:"Symbol name: Foo, T.Method, T.Field, or pkg.Symbol (pkg is an import name in the file)."`
+	Show   []string `json:"show,omitempty" jsonschema:"Sections to return, any of: definition, references, callers, callees, implementations. Default: definition and references."`
 }
 
-func (p symbolParams) validate() string {
+// symbolSectionNames lists every section gov_symbol accepts, in output order.
+var symbolSectionNames = []string{"definition", "references", "callers", "callees", "implementations"}
+
+// symbolSections lists the sections after definition, in output order,
+// with the function that renders each. A section that does not apply to
+// the symbol's kind (callers of a type, callees of an interface method)
+// renders its error in place rather than failing the call.
+var symbolSections = []struct {
+	name   string
+	render func(ctx context.Context, w *analysis.Workspace, file, symbol string) (string, error)
+}{
+	{"references", func(ctx context.Context, w *analysis.Workspace, file, symbol string) (string, error) {
+		refs, err := w.References(ctx, file, symbol)
+		if err != nil {
+			return "", err
+		}
+		return analysis.FormatReferences(symbol, refs), nil
+	}},
+	{"callers", func(ctx context.Context, w *analysis.Workspace, file, symbol string) (string, error) {
+		calls, err := w.Callers(ctx, file, symbol)
+		if err != nil {
+			return "", err
+		}
+		return analysis.FormatCallers(symbol, calls), nil
+	}},
+	{"callees", func(ctx context.Context, w *analysis.Workspace, file, symbol string) (string, error) {
+		calls, err := w.Callees(ctx, file, symbol)
+		if err != nil {
+			return "", err
+		}
+		return analysis.FormatCallees(symbol, calls), nil
+	}},
+	{"implementations", func(ctx context.Context, w *analysis.Workspace, file, symbol string) (string, error) {
+		impls, err := w.Implementations(ctx, file, symbol)
+		if err != nil {
+			return "", err
+		}
+		return analysis.FormatImplementations(symbol, impls), nil
+	}},
+}
+
+func (h *handler) symbolHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p symbolParams) (*sdkmcp.CallToolResult, any, error) {
 	if p.File == "" || p.Symbol == "" {
-		return "file and symbol are required"
+		return errorResult("file and symbol are required")
 	}
-	return ""
-}
+	show := map[string]bool{"definition": true, "references": true}
+	if len(p.Show) > 0 {
+		show = make(map[string]bool, len(p.Show))
+		for _, s := range p.Show {
+			if !slices.Contains(symbolSectionNames, s) {
+				return errorResult(fmt.Sprintf("unknown show value %q; use %s", s, strings.Join(symbolSectionNames, ", ")))
+			}
+			show[s] = true
+		}
+	}
 
-func (h *handler) referencesHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p symbolParams) (*sdkmcp.CallToolResult, any, error) {
-	if msg := p.validate(); msg != "" {
-		return errorResult(msg)
-	}
-	refs, err := h.intel.References(ctx, p.File, p.Symbol)
-	if err != nil {
-		return errorResult(fmt.Sprintf("references failed: %v", err))
-	}
-	return textResult(analysis.FormatReferences(p.Symbol, refs))
-}
-
-func (h *handler) definitionHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p symbolParams) (*sdkmcp.CallToolResult, any, error) {
-	if msg := p.validate(); msg != "" {
-		return errorResult(msg)
-	}
+	// Resolve once up front so an unknown symbol is one error, not one
+	// per section; the result is the definition section when asked for.
 	def, err := h.intel.DefinitionOf(ctx, p.File, p.Symbol)
 	if err != nil {
-		return errorResult(fmt.Sprintf("definition failed: %v", err))
+		return errorResult(fmt.Sprintf("symbol failed: %v", err))
 	}
-	return textResult(analysis.FormatDefinition(def))
-}
 
-func (h *handler) implementationsHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p symbolParams) (*sdkmcp.CallToolResult, any, error) {
-	if msg := p.validate(); msg != "" {
-		return errorResult(msg)
+	var out []string
+	if show["definition"] {
+		out = append(out, analysis.FormatDefinition(def))
 	}
-	impls, err := h.intel.Implementations(ctx, p.File, p.Symbol)
-	if err != nil {
-		return errorResult(fmt.Sprintf("implementations failed: %v", err))
+	for _, sec := range symbolSections {
+		if !show[sec.name] {
+			continue
+		}
+		text, err := sec.render(ctx, h.intel, p.File, p.Symbol)
+		if err != nil {
+			text = fmt.Sprintf("%s: %v", sec.name, err)
+		}
+		out = append(out, text)
 	}
-	return textResult(analysis.FormatImplementations(p.Symbol, impls))
-}
-
-func (h *handler) callersHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p symbolParams) (*sdkmcp.CallToolResult, any, error) {
-	if msg := p.validate(); msg != "" {
-		return errorResult(msg)
-	}
-	calls, err := h.intel.Callers(ctx, p.File, p.Symbol)
-	if err != nil {
-		return errorResult(fmt.Sprintf("callers failed: %v", err))
-	}
-	return textResult(analysis.FormatCallers(p.Symbol, calls))
-}
-
-func (h *handler) calleesHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p symbolParams) (*sdkmcp.CallToolResult, any, error) {
-	if msg := p.validate(); msg != "" {
-		return errorResult(msg)
-	}
-	calls, err := h.intel.Callees(ctx, p.File, p.Symbol)
-	if err != nil {
-		return errorResult(fmt.Sprintf("callees failed: %v", err))
-	}
-	return textResult(analysis.FormatCallees(p.Symbol, calls))
+	return textResult(strings.Join(out, "\n\n"))
 }
 
 type outlineParams struct {
 	Target string `json:"target" jsonschema:"Absolute path to a Go file or directory, or a package import path."`
+	API    bool   `json:"api,omitempty" jsonschema:"Render the exported API of the target's package in Go syntax with doc comments instead of the line-range outline."`
 }
 
 func (h *handler) outlineHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p outlineParams) (*sdkmcp.CallToolResult, any, error) {
 	if p.Target == "" {
 		return errorResult("target is required")
+	}
+	if p.API {
+		out, err := h.intel.PackageAPI(ctx, []string{p.Target})
+		if err != nil {
+			return errorResult(fmt.Sprintf("outline failed: %v", err))
+		}
+		return textResult(out)
 	}
 	entries, err := h.intel.Outline(ctx, p.Target)
 	if err != nil {
@@ -147,12 +149,16 @@ func (h *handler) outlineHandler(ctx context.Context, _ *sdkmcp.CallToolRequest,
 }
 
 type fixParams struct {
-	Files []string `json:"files" jsonschema:"Absolute paths of the Go files to fix."`
+	Files []string `json:"files,omitempty" jsonschema:"Absolute paths of the Go files to fix. Empty: report workspace diagnostics without changing anything."`
 }
 
 func (h *handler) fixHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p fixParams) (*sdkmcp.CallToolResult, any, error) {
 	if len(p.Files) == 0 {
-		return errorResult("files is required")
+		diags, err := h.intel.Diagnostics(ctx, nil)
+		if err != nil {
+			return errorResult(fmt.Sprintf("diagnostics failed: %v", err))
+		}
+		return textResult(analysis.FormatDiagnostics(diags, h.engine.Config.MaxOutputBytes()))
 	}
 	results, err := h.intel.Fix(ctx, p.Files)
 	if err != nil {
@@ -163,23 +169,6 @@ func (h *handler) fixHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p f
 
 // registerIntelTools registers the code intelligence tools.
 func registerIntelTools(s *sdkmcp.Server, h *handler) {
-	sdkmcp.AddTool(s, &sdkmcp.Tool{
-		Name: "gov_diagnostics",
-		Description: `Workspace-wide parse, build and type errors.
-
-Optionally pass "files" (absolute paths) to restrict output to those files.
-Type-checked in process; the first call after a source change reloads the workspace.`,
-	}, h.diagnosticsHandler)
-
-	sdkmcp.AddTool(s, &sdkmcp.Tool{
-		Name: "gov_package_api",
-		Description: `Exported API of one or more packages, in Go syntax.
-
-Pass "packagePaths" (Go import paths): workspace packages, the standard library or any
-go.mod dependency. Function bodies and unexported members are omitted. Use this instead
-of go doc or reading module cache sources.`,
-	}, h.packageAPIHandler)
-
 	sdkmcp.AddTool(s, &sdkmcp.Tool{
 		Name: "gov_search",
 		Description: `Fuzzy symbol search across the workspace.
@@ -197,50 +186,25 @@ from sibling files, and the exported symbols it uses from each imported package.
 	}, h.fileContextHandler)
 
 	sdkmcp.AddTool(s, &sdkmcp.Tool{
-		Name: "gov_symbol_references",
-		Description: `Find all references to a symbol across the workspace.
+		Name: "gov_symbol",
+		Description: `Everything about one symbol: definition, references, callers, callees, implementations.
 
-Pass "file" (absolute path) and "symbol" (Foo, T.Method, T.Field, or pkg.Symbol).
-The definition is listed first. A symbol from the standard library or a dependency is
-also searched inside its own package, so this answers how a library uses its own types.`,
-	}, h.referencesHandler)
-
-	sdkmcp.AddTool(s, &sdkmcp.Tool{
-		Name: "gov_definition",
-		Description: `Where a symbol is declared, with its signature and doc comment.
-
-Pass "file" (absolute path) and "symbol" (Foo, T.Method, T.Field, or pkg.Symbol).
-pkg.Symbol reaches into the standard library and dependencies imported by the file.
-Use this instead of grepping for a declaration or running go doc.`,
-	}, h.definitionHandler)
-
-	sdkmcp.AddTool(s, &sdkmcp.Tool{
-		Name: "gov_implementations",
-		Description: `Interface satisfaction across the workspace.
-
-Pass "file" and "symbol". For an interface: the types that satisfy it. For a concrete
-type: the workspace interfaces it satisfies. For a method: the matching methods on the
-other side. A leading * marks types that satisfy only via pointer receiver. A symbol
-from the standard library or a dependency is also matched inside its own package.`,
-	}, h.implementationsHandler)
-
-	sdkmcp.AddTool(s, &sdkmcp.Tool{
-		Name: "gov_callers",
-		Description: `Static call sites of a function or method, with the enclosing function of each.
-
-Pass "file" and "symbol". Calls through an interface resolve to the interface method,
-so query the interface method to see dynamic dispatch sites. A function from the
-standard library or a dependency also lists its callers inside its own package.`,
-	}, h.callersHandler)
-
-	sdkmcp.AddTool(s, &sdkmcp.Tool{
-		Name: "gov_callees",
-		Description: `Every call made inside a function or method body, in source order.
-
-Pass "file" and "symbol". Calls through function-typed values are prefixed "dynamic:".
-Works for standard library and dependency functions too; use it to learn what a library
-function does without reading its source.`,
-	}, h.calleesHandler)
+Pass "file" (absolute path) and "symbol" (Foo, T.Method, T.Field, or pkg.Symbol, where pkg
+is an import name in the file; that reaches the standard library and dependencies). "show"
+picks the sections; default is definition and references. Use it instead of grepping for
+a declaration or its uses, and instead of go doc.
+  definition:      declaration site, signature, doc comment.
+  references:      every use across the workspace, definition first. For a library symbol,
+                   uses inside the library too.
+  callers:         static call sites with their enclosing function. Calls through an
+                   interface resolve to the interface method; query that to see them.
+  callees:         every call inside the body, in source order; "dynamic:" marks calls
+                   through function values. Works on library functions.
+  implementations: for an interface, the types satisfying it; for a type, the interfaces
+                   it satisfies; for a method, the matching methods on the other side.
+                   A leading * marks pointer-receiver-only satisfaction.
+Before editing a symbol, ask for references, callers and implementations in one call.`,
+	}, h.symbolHandler)
 
 	sdkmcp.AddTool(s, &sdkmcp.Tool{
 		Name: "gov_fix",
@@ -248,7 +212,8 @@ function does without reading its source.`,
 
 Pass "files" (absolute paths). Applies, in order: modernize rewrites (safe suite),
 missing/unused import repair, gofumpt. Returns what changed and the file's diagnostics.
-Call after every edit instead of gov_diagnostics; it is a superset.`,
+Call after every edit. With no files it changes nothing and reports the parse, build
+and type errors of the whole workspace.`,
 	}, h.fixHandler)
 
 	sdkmcp.AddTool(s, &sdkmcp.Tool{
@@ -258,6 +223,8 @@ Call after every edit instead of gov_diagnostics; it is a superset.`,
 Pass "target": an absolute .go path or a package import path, including the standard
 library and go.mod dependencies. A file or directory outside any loaded package (a
 cloned repository, a downloaded file) is parsed on its own, syntax only. Read this
-before opening a large file to decide which line range to read.`,
+before opening a large file to decide which line range to read. With "api": true the
+target's package is rendered as its exported API in Go syntax with doc comments, bodies
+and unexported members omitted; use that instead of go doc.`,
 	}, h.outlineHandler)
 }

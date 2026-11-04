@@ -101,7 +101,7 @@ func TestInspect_Blocks(t *testing.T) {
 			t.Errorf("%q not blocked: %+v", in, d)
 			continue
 		}
-		if !strings.Contains(d.Blocked, "gov_diagnostics") || d.Command != in || len(d.Rewrites) != 0 {
+		if !strings.Contains(d.Blocked, "gov_fix with no files") || d.Command != in || len(d.Rewrites) != 0 {
 			t.Errorf("%q: %+v", in, d)
 		}
 	}
