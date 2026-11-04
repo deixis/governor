@@ -245,9 +245,17 @@ func (s *snapshot) planRemove(req Request) (*Report, error) {
 		summary += fmt.Sprintf("; breaks %s in %s", plural(total, "use"), plural(len(paths), "package"))
 		r.followUp("Fix or remove the uses that break", lines)
 	}
-	if tn, ok := set.decls[0].obj.(*types.TypeName); ok {
-		if links := s.interfaceLinks(tn); len(links) > 0 {
+	switch obj := set.decls[0].obj.(type) {
+	case *types.TypeName:
+		if links := s.interfaceLinks(obj); len(links) > 0 {
 			summary += "; drops " + plural(len(links), "interface relation") + " (" + strings.Join(firstN(links, 3), ", ") + ")"
+		}
+	case *types.Func:
+		if sig := obj.Type().(*types.Signature); sig.Recv() != nil {
+			if links := s.methodLinks(obj); len(links) > 0 {
+				summary += fmt.Sprintf("; %s stops satisfying %s", recvTypeName(sig.Recv().Type()), plural(len(links), "interface"))
+				r.followUp("Fix the sites relying on the interface it satisfied", links)
+			}
 		}
 	}
 	if orphans := s.orphans(set); len(orphans) > 0 {

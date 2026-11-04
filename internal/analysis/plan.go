@@ -5,8 +5,11 @@ import (
 	"fmt"
 	"go/ast"
 	"go/parser"
+	"go/scanner"
 	"go/token"
 	"go/types"
+	"regexp"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -138,11 +141,11 @@ func (w *Workspace) Plan(ctx context.Context, req Request) (*Report, error) {
 	}
 	switch req.Op {
 	case "add":
-		return snap.planAdd(req)
+		return snap.planAdd(ctx, req)
 	case "remove":
 		return snap.planRemove(req)
 	case "replace":
-		return snap.planReplace(req)
+		return snap.planReplace(ctx, req)
 	case "move":
 		return snap.planMove(req)
 	default:
@@ -150,9 +153,13 @@ func (w *Workspace) Plan(ctx context.Context, req Request) (*Report, error) {
 	}
 }
 
-// maxFollowUpLines caps each follow-up list: the plan says where to act,
-// gov_symbol lists every site.
-const maxFollowUpLines = 20
+// maxFollowUpLines caps each follow-up list and maxIssues each list of
+// causes or questions: the plan says where to act, gov_symbol lists every
+// site.
+const (
+	maxFollowUpLines = 20
+	maxIssues        = 20
+)
 
 // FormatReport renders a report as plain text.
 func FormatReport(r *Report) string {
@@ -170,7 +177,11 @@ func FormatReport(r *Report) string {
 			return
 		}
 		fmt.Fprintf(&b, "\n%s:\n", title)
-		for _, is := range list {
+		for i, is := range list {
+			if i == maxIssues {
+				fmt.Fprintf(&b, "  ... +%d more\n", len(list)-maxIssues)
+				break
+			}
 			fmt.Fprintf(&b, "  - %s\n", is.Cause)
 			if is.Fix != "" {
 				fmt.Fprintf(&b, "    Fix: %s\n", is.Fix)
@@ -415,31 +426,73 @@ func firstN[T any](in []T, n int) []T {
 	return in[:n]
 }
 
-// parseSource parses declaration text without a package clause. Leading
-// import declarations are returned separately as import paths.
-func parseSource(src string) (decls []ast.Decl, imports []string, err error) {
+// parsed is declaration text taken apart: the declarations, the import
+// paths of any leading import block, and the text with that block and
+// any package clause removed.
+type parsed struct {
+	decls   []ast.Decl
+	imports []string
+	body    string
+	// text is the source as parsed, package clause removed, and fset
+	// positions it with offsets shifted by prefixLen.
+	text string
+	fset *token.FileSet
+}
+
+// prefixLen is the length of the package clause parseSource prepends.
+const prefixLen = len("package p\n\n")
+
+// nodeText returns the source text of a node parsed from the source.
+func (p *parsed) nodeText(n ast.Node) string {
+	start := p.fset.Position(n.Pos()).Offset - prefixLen
+	end := p.fset.Position(n.End()).Offset - prefixLen
+	return p.text[start:end]
+}
+
+var packageClause = regexp.MustCompile(`(?m)^package\s+\w+[^\n]*\n?`)
+
+// parseSource parses declaration text. A package clause is dropped, and
+// leading import declarations are returned separately as import paths.
+// Parse errors carry the line numbers of the text as given.
+func parseSource(src string) (*parsed, error) {
+	src = packageClause.ReplaceAllString(src, "")
+	const prefix = "package p\n\n"
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "source.go", "package p\n\n"+src, parser.ParseComments|parser.SkipObjectResolution)
 	if err != nil {
-		return nil, nil, fmt.Errorf("source does not parse: %w", err)
+		if list, ok := err.(scanner.ErrorList); ok && len(list) > 0 {
+			e := list[0]
+			return nil, fmt.Errorf("source does not parse: line %d: %s", e.Pos.Line-2, e.Msg)
+		}
+		return nil, fmt.Errorf("source does not parse: %w", err)
 	}
+	out := &parsed{text: src, fset: fset}
+	var cuts []span
 	for _, d := range f.Decls {
 		if g, ok := d.(*ast.GenDecl); ok && g.Tok == token.IMPORT {
 			for _, spec := range g.Specs {
 				path, err := strconv.Unquote(spec.(*ast.ImportSpec).Path.Value)
 				if err != nil {
-					return nil, nil, fmt.Errorf("import %s: %w", spec.(*ast.ImportSpec).Path.Value, err)
+					return nil, fmt.Errorf("import %s: %w", spec.(*ast.ImportSpec).Path.Value, err)
 				}
-				imports = append(imports, path)
+				out.imports = append(out.imports, path)
 			}
+			cuts = append(cuts, span{g.Pos(), g.End()})
 			continue
 		}
-		decls = append(decls, d)
+		out.decls = append(out.decls, d)
 	}
-	if len(decls) == 0 {
-		return nil, nil, fmt.Errorf("source declares nothing")
+	if len(out.decls) == 0 {
+		return nil, fmt.Errorf("source declares nothing")
 	}
-	return decls, imports, nil
+	body := src
+	for _, cut := range slices.Backward(cuts) {
+		start := fset.Position(cut.start).Offset - prefixLen
+		end := fset.Position(cut.end).Offset - prefixLen
+		body = body[:start] + body[end:]
+	}
+	out.body = strings.TrimLeft(body, "\n")
+	return out, nil
 }
 
 // declNames lists the identifiers a parsed declaration introduces, with

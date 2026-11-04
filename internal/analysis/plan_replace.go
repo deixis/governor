@@ -2,38 +2,40 @@ package analysis
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"go/ast"
 	"go/printer"
 	"go/token"
 	"go/types"
 	"maps"
+	"os"
 	"slices"
 	"strings"
 )
 
-func (s *snapshot) planReplace(req Request) (*Report, error) {
+func (s *snapshot) planReplace(ctx context.Context, req Request) (*Report, error) {
 	if req.File == "" || req.Symbol == "" {
 		return nil, fmt.Errorf("file and symbol are required")
 	}
 	if strings.TrimSpace(req.Source) == "" {
 		return nil, fmt.Errorf("source is required")
 	}
-	decls, imports, err := parseSource(req.Source)
+	set, err := s.removalSetFor(req.File, req.Symbol)
 	if err != nil {
 		return nil, err
 	}
+	src, err := parseSource(req.Source)
+	if err != nil {
+		return nil, err
+	}
+	decls, imports := src.decls, src.imports
 	if len(decls) != 1 {
 		return nil, fmt.Errorf("source must hold exactly one declaration, got %d", len(decls))
 	}
 	newNames := declNames(decls[0])
 	if len(newNames) != 1 {
 		return nil, fmt.Errorf("source must declare exactly one name, got %d", len(newNames))
-	}
-
-	set, err := s.removalSetFor(req.File, req.Symbol)
-	if err != nil {
-		return nil, err
 	}
 	old := set.decls[0]
 	r := &Report{Op: "replace", Subject: req.Symbol}
@@ -68,6 +70,20 @@ func (s *snapshot) planReplace(req Request) (*Report, error) {
 	}
 
 	if len(r.Blockers) == 0 {
+		orig, _ := os.ReadFile(s.fset.Position(start).Filename)
+		if orig != nil {
+			// Inside a group the spec alone is spliced, not the keyword.
+			text := src.body
+			if g, ok := decls[0].(*ast.GenDecl); ok && old.gen != nil && len(old.gen.Specs) > 1 && len(g.Specs) == 1 {
+				text = src.nodeText(g.Specs[0])
+			}
+			ed := splice(orig, old.pkg.Name, imports, text, s.fset.Position(start).Offset, s.fset.Position(end).Offset)
+			for _, e := range s.checkSource(ctx, old.pkg, s.fset.Position(start).Filename, ed) {
+				r.block("does not compile: "+e, compileFix)
+			}
+		}
+	}
+	if len(r.Blockers) == 0 {
 		switch oldNode := old.node.(type) {
 		case *ast.FuncDecl:
 			newFn := decls[0].(*ast.FuncDecl)
@@ -82,14 +98,29 @@ func (s *snapshot) planReplace(req Request) (*Report, error) {
 		case *ast.TypeSpec:
 			newSpec := decls[0].(*ast.GenDecl).Specs[0].(*ast.TypeSpec)
 			if printNode(oldNode.Type) != printNode(newSpec.Type) {
+				if ok, nk := typeKind(oldNode.Type), typeKind(newSpec.Type); ok != nk {
+					summary += fmt.Sprintf("; kind changes from %s to %s", ok, nk)
+				}
 				diff := shapeDiff(oldNode.Type, newSpec.Type)
 				summary += "; shape changes: " + strings.Join(diff, ", ")
-				uses, _ := s.usesOutside(set)
-				var lines []string
-				for _, path := range slices.Sorted(maps.Keys(uses)) {
-					lines = append(lines, fmt.Sprintf("%s (%s)", path, plural(len(uses[path]), "use")))
+				var changed []string
+				for _, d := range diff {
+					if name, ok := strings.CutPrefix(d, "removed "); ok {
+						changed = append(changed, name)
+					} else if name, ok := strings.CutPrefix(d, "changed "); ok {
+						changed = append(changed, name)
+					}
 				}
-				r.followUp("Check the packages using it against the removed or changed members", lines)
+				if sites := s.memberUseSites(set, old.obj.(*types.TypeName), changed); len(sites) > 0 {
+					r.followUp("Update the uses of removed or changed members", sites)
+				} else {
+					uses, _ := s.usesOutside(set)
+					var lines []string
+					for _, path := range slices.Sorted(maps.Keys(uses)) {
+						lines = append(lines, fmt.Sprintf("%s (%s)", path, plural(len(uses[path]), "use")))
+					}
+					r.followUp("Check the packages using it against the new shape", lines)
+				}
 				if links := s.interfaceLinks(old.obj.(*types.TypeName)); len(links) > 0 {
 					r.followUp("Re-check interface satisfaction", links)
 				}
@@ -199,6 +230,82 @@ func (s *snapshot) methodLinks(m *types.Func) []string {
 				out = append(out, fmt.Sprintf("%s.%s.%s  %s", p.Types.Name(), tn.Name(), m.Name(), s.position(s.root, im.Pos())))
 			}
 		}
+	}
+	return out
+}
+
+// typeKind names the syntactic kind of a type expression.
+func typeKind(t ast.Expr) string {
+	switch t := t.(type) {
+	case *ast.StructType:
+		return "struct"
+	case *ast.InterfaceType:
+		return "interface"
+	case *ast.FuncType:
+		return "func"
+	case *ast.MapType:
+		return "map"
+	case *ast.ArrayType:
+		if t.Len == nil {
+			return "slice"
+		}
+		return "array"
+	case *ast.ChanType:
+		return "chan"
+	case *ast.StarExpr:
+		return "pointer"
+	}
+	return "named"
+}
+
+// memberUseSites lists where fields or methods of tn with the given names
+// are used, outside the set's own declarations.
+func (s *snapshot) memberUseSites(set *removalSet, tn *types.TypeName, names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	wanted := toSet(names)
+	targets := make(map[string]bool)
+	if st, ok := tn.Type().Underlying().(*types.Struct); ok {
+		for f := range st.Fields() {
+			if wanted[f.Name()] {
+				targets[objectKey(s.fset, f)] = true
+			}
+		}
+	}
+	for _, d := range methodsOf(set.index, tn) {
+		if wanted[d.obj.Name()] {
+			targets[objectKey(s.fset, d.obj)] = true
+		}
+	}
+	if iface, ok := tn.Type().Underlying().(*types.Interface); ok {
+		for m := range iface.Methods() {
+			if wanted[m.Name()] {
+				targets[objectKey(s.fset, m)] = true
+			}
+		}
+	}
+	member := make(map[string]string)
+	var positions []string
+	for _, p := range s.pkgs {
+		if p.TypesInfo == nil || isTestMain(p) {
+			continue
+		}
+		for id, obj := range p.TypesInfo.Uses {
+			if obj == nil || !targets[objectKey(s.fset, obj)] {
+				continue
+			}
+			if p.PkgPath == set.pkg.PkgPath && set.contains(id.Pos()) {
+				continue
+			}
+			pos := s.position(s.root, id.Pos())
+			member[pos] = obj.Name()
+			positions = append(positions, pos)
+		}
+	}
+	var out []string
+	for _, pos := range sortedPositions(positions) {
+		out = append(out, pos+"  ."+member[pos])
 	}
 	return out
 }

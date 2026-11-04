@@ -3,7 +3,9 @@ package analysis
 import (
 	"fmt"
 	"go/ast"
+	"go/token"
 	"go/types"
+	"maps"
 	"slices"
 	"sort"
 	"strings"
@@ -25,21 +27,35 @@ type moveAnalysis struct {
 	// keeps using as foo.X.
 	exportedStays []types.Object
 	// memberUses are unexported methods or fields of other source-package
-	// types that the moved code reaches into.
-	memberUses []string
-	// incoming are uses of the moved set from code staying in the source
-	// package, test files included.
-	incomingExported   []string
-	incomingUnexported []string
+	// types that the moved code reaches into, by owner.
+	memberUses map[*types.TypeName][]memberUse
+	// incomingExported are uses of the moved set from code staying in the
+	// source package, test files included, that a qualifier fixes.
+	incomingExported []string
+	// incomingMembers are uses from staying code of unexported methods or
+	// fields of a moved type, by T.m.
+	incomingMembers map[string][]string
+	// exportable are unexported moved declarations that staying code
+	// uses: an export decision makes those uses incomingExported.
+	exportable map[types.Object][]string
+	// exported are moved declarations renamed by an export decision.
+	exported []types.Object
 	// forcedPulled are shared helpers pulled along by Force or a pull
 	// decision, with the users left behind.
 	forcedPulled map[types.Object][]string
 	forcedOrder  []types.Object
+	// unused are decision names that matched nothing.
+	unused []string
 }
 
 type sharedUse struct {
 	by     string
 	others []string
+}
+
+type memberUse struct {
+	member string
+	pos    string
 }
 
 func (s *snapshot) planMove(req Request) (*Report, error) {
@@ -53,7 +69,11 @@ func (s *snapshot) planMove(req Request) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	target, err := s.resolveTarget(req.Target, snakeCase(set.decls[0].obj.Name())+".go")
+	subject := set.decls[0]
+	if owner := memberOwner(subject.obj); owner != nil {
+		return nil, fmt.Errorf("%s is a method of %s: move %s, or make it a function first", req.Symbol, owner.Name(), owner.Name())
+	}
+	target, err := s.resolveTarget(req.Target, snakeCase(subject.obj.Name())+".go")
 	if err != nil {
 		return nil, err
 	}
@@ -61,23 +81,28 @@ func (s *snapshot) planMove(req Request) (*Report, error) {
 	if dest.PkgPath == src.PkgPath {
 		return nil, fmt.Errorf("%s is already in %s", req.Symbol, dest.PkgPath)
 	}
+	if strings.HasSuffix(target.file, "_test.go") && !strings.HasSuffix(s.fileOf(subject), "_test.go") {
+		return nil, fmt.Errorf("%s would move into a test file, where only tests can see it", req.Symbol)
+	}
 	r := &Report{Op: "move", Subject: req.Symbol + " -> " + dest.PkgPath}
 	for _, d := range set.decls {
 		if isGenerated(d.file) {
 			r.block(s.fileOf(d)+" is generated code", "change the generator instead")
 		}
 	}
-	destFile := relPath(s.root, target.file)
 	if !target.newFile {
 		if f := fileSyntax(dest, target.file); f != nil && isGenerated(f) {
-			r.block(destFile+" is generated code", "target another file of the package, or change the generator")
+			r.block(target.where(s.root)+" is generated code", "target another file of the package, or change the generator")
 		}
 	}
 	moved := len(set.decls)
 	fromFiles := s.setFiles(set)
 
 	ma := s.analyseMove(set, req.Decisions, req.Force)
-	destNeedsSource := len(ma.exportedStays) > 0 || len(req.Decisions.Export) > 0
+	if len(ma.unused) > 0 {
+		return nil, fmt.Errorf("decisions name %s, which the move does not involve", strings.Join(ma.unused, ", "))
+	}
+	destNeedsSource := len(ma.exportedStays) > 0
 
 	// Users left behind by a pulled helper. The agent chose to pull, so
 	// they are follow-ups; when importing the helper back would close a
@@ -108,12 +133,7 @@ func (s *snapshot) planMove(req Request) (*Report, error) {
 	}
 
 	// Shared helpers: the agent decides.
-	sharedObjs := make([]types.Object, 0, len(ma.shared))
-	for obj := range ma.shared {
-		sharedObjs = append(sharedObjs, obj)
-	}
-	sort.Slice(sharedObjs, func(i, j int) bool { return sharedObjs[i].Name() < sharedObjs[j].Name() })
-	for _, obj := range sharedObjs {
+	for _, obj := range sortedObjects(maps.Keys(ma.shared)) {
 		use := ma.shared[obj]
 		r.ask(fmt.Sprintf("%s %s (%s) is unexported, used by %s and by %s staying in %s",
 			objectKind(obj), obj.Name(), s.position(s.root, obj.Pos()), use.by, strings.Join(firstN(use.others, 3), ", "), src.Name),
@@ -121,13 +141,40 @@ func (s *snapshot) planMove(req Request) (*Report, error) {
 				obj.Name(), src.Name, src.Name, exportedName(obj.Name()), obj.Name()))
 	}
 
-	for _, m := range ma.memberUses {
-		r.block("moved code uses unexported "+m+", which stays in "+src.Name,
-			"export that member, or move its type as well")
+	// Unexported moved declarations that staying code uses: export them,
+	// or move the users.
+	for _, obj := range sortedObjects(maps.Keys(ma.exportable)) {
+		sites := ma.exportable[obj]
+		r.ask(fmt.Sprintf("%s %s is unexported and used by %s staying in %s",
+			objectKind(obj), obj.Name(), strings.Join(firstN(sites, 3), ", "), src.Name),
+			fmt.Sprintf(`decisions.export ["%s"]: move it as %s and rewrite those users to %s.%s; or move those users too`,
+				obj.Name(), exportedName(obj.Name()), dest.Name, exportedName(obj.Name())))
 	}
-	for _, u := range ma.incomingUnexported {
-		r.block("code staying in "+src.Name+" uses unexported "+u+" of the moved type",
-			"export that member before moving, or move the user too")
+
+	for _, owner := range sortedObjects(maps.Keys(ma.memberUses)) {
+		uses := ma.memberUses[owner]
+		var members, sites []string
+		for _, u := range uses {
+			members = append(members, u.member)
+			sites = append(sites, u.pos)
+		}
+		sort.Strings(members)
+		members = slices.Compact(members)
+		what := "member " + members[0]
+		if len(members) > 1 {
+			what = "members " + strings.Join(firstN(members, 4), ", ")
+			if len(members) > 4 {
+				what += fmt.Sprintf(" and %d more", len(members)-4)
+			}
+		}
+		r.block(fmt.Sprintf("moved code uses unexported %s of %s at %s; %s stays in %s",
+			what, owner.Name(), strings.Join(firstN(sortedPositions(sites), 3), ", "), owner.Name(), src.Name),
+			fmt.Sprintf("export those members, or move %s as well", owner.Name()))
+	}
+	for _, member := range slices.Sorted(maps.Keys(ma.incomingMembers)) {
+		r.block(fmt.Sprintf("code staying in %s uses unexported %s of the moved type at %s",
+			src.Name, member, strings.Join(firstN(ma.incomingMembers[member], 3), ", ")),
+			"export that member before moving, or move those users too")
 	}
 
 	// Import direction after the move, and cycles.
@@ -154,13 +201,11 @@ func (s *snapshot) planMove(req Request) (*Report, error) {
 	// of them may sit on an import path from the destination.
 	uses, generated := s.usesOutside(set)
 	delete(uses, src.PkgPath)
-	paths := make([]string, 0, len(uses))
+	paths := slices.Sorted(maps.Keys(uses))
 	total := 0
-	for k, v := range uses {
-		paths = append(paths, k)
+	for _, v := range uses {
 		total += len(v)
 	}
-	sort.Strings(paths)
 	for _, p := range paths {
 		if p != dest.PkgPath && s.importsTransitively(dest, p) {
 			r.block(fmt.Sprintf("import cycle: %s uses the moved code at %s and %s imports it",
@@ -174,13 +219,20 @@ func (s *snapshot) planMove(req Request) (*Report, error) {
 	}
 
 	// Summary.
-	parts := []string{fmt.Sprintf("moves %s from %s to %s", plural(moved, "declaration"), strings.Join(fromFiles, ", "), destFile)}
+	parts := []string{fmt.Sprintf("moves %s from %s to %s", plural(moved, "declaration"), strings.Join(fromFiles, ", "), target.where(s.root))}
 	if len(ma.pulled) > 0 {
 		names := make([]string, len(ma.pulled))
 		for i, d := range ma.pulled {
 			names[i] = d.obj.Name()
 		}
 		parts = append(parts, "pulls "+strings.Join(names, ", ")+" along")
+	}
+	if len(ma.exported) > 0 {
+		var renames []string
+		for _, obj := range sortedObjects(slices.Values(ma.exported)) {
+			renames = append(renames, obj.Name()+" as "+exportedName(obj.Name()))
+		}
+		parts = append(parts, "exports "+strings.Join(renames, ", "))
 	}
 	if len(ma.exportedStays) > 0 {
 		parts = append(parts, fmt.Sprintf("keeps using %s from %s", strings.Join(objectNames(firstN(ma.exportedStays, 3)), ", "), src.Name))
@@ -201,7 +253,7 @@ func (s *snapshot) planMove(req Request) (*Report, error) {
 		}
 		parts = append(parts, "rewrites "+plural(total, "reference")+" in "+strings.Join(pkgs, ", "))
 	}
-	if tn, ok := set.decls[0].obj.(*types.TypeName); ok {
+	if tn, ok := subject.obj.(*types.TypeName); ok {
 		var local []string
 		for _, l := range s.interfaceLinks(tn) {
 			if strings.HasPrefix(l, src.Name+".") {
@@ -219,25 +271,53 @@ func (s *snapshot) planMove(req Request) (*Report, error) {
 
 // analyseMove computes the closure. Decisions move shared objects into
 // the pulled set (pull) or treat them as exported stays (export); force
-// pulls every undecided shared object.
+// pulls every undecided shared object. The closure is a fixed point: a
+// helper whose other users all end up pulled is pulled too.
 func (s *snapshot) analyseMove(set *removalSet, decisions Decisions, force bool) *moveAnalysis {
 	ma := &moveAnalysis{
-		shared:       make(map[types.Object]sharedUse),
-		forcedPulled: make(map[types.Object][]string),
+		shared:          make(map[types.Object]sharedUse),
+		memberUses:      make(map[*types.TypeName][]memberUse),
+		incomingMembers: make(map[string][]string),
+		exportable:      make(map[types.Object][]string),
+		forcedPulled:    make(map[types.Object][]string),
 	}
 	src := set.pkg
 	scope := src.Types.Scope()
 	owners := fieldOwners(src.Types)
 	pull := toSet(decisions.Pull)
 	export := toSet(decisions.Export)
+	decided := make(map[string]bool)
 
+	type rawMember struct {
+		owner *types.TypeName
+		use   memberUse
+	}
+	var rawMembers []rawMember
 	queue := slices.Clone(set.decls)
 	staySeen := make(map[types.Object]bool)
+	pullObj := func(obj types.Object, others []string) {
+		pd, ok := set.index[obj]
+		if !ok {
+			return
+		}
+		ma.pulled = append(ma.pulled, pd)
+		for _, d := range set.withMethods(pd) {
+			set.add(d)
+			queue = append(queue, d)
+		}
+		if len(others) > 0 {
+			ma.forcedPulled[obj] = others
+			ma.forcedOrder = append(ma.forcedOrder, obj)
+		}
+	}
 	// depend settles one package-level object of src the moved code
 	// needs: it stays (exported, or exported by decision), travels
 	// (unexported and used by nothing else, or pulled by decision or
 	// force) or becomes a question.
 	depend := func(obj types.Object, by decl) {
+		if export[obj.Name()] {
+			decided[obj.Name()] = true
+		}
 		if obj.Exported() || export[obj.Name()] {
 			if !staySeen[obj] {
 				staySeen[obj] = true
@@ -249,68 +329,84 @@ func (s *snapshot) analyseMove(set *removalSet, decisions Decisions, force bool)
 			return
 		}
 		others := s.usersOutside(obj, set)
+		if pull[obj.Name()] {
+			decided[obj.Name()] = true
+		}
 		if len(others) == 0 || pull[obj.Name()] || force {
-			pd, ok := set.index[obj]
-			if !ok {
-				return
-			}
-			ma.pulled = append(ma.pulled, pd)
-			for _, d := range set.withMethods(pd) {
-				set.add(d)
-				queue = append(queue, d)
-			}
-			if len(others) > 0 {
-				ma.forcedPulled[obj] = others
-				ma.forcedOrder = append(ma.forcedOrder, obj)
-			}
+			pullObj(obj, others)
 			return
 		}
 		ma.shared[obj] = sharedUse{by: qualifiedName(by.obj), others: others}
 	}
-	for len(queue) > 0 {
-		d := queue[0]
-		queue = queue[1:]
-		inspectSpan(d, func(n ast.Node) {
-			id, ok := n.(*ast.Ident)
-			if !ok {
-				return
-			}
-			obj := src.TypesInfo.Uses[id]
-			if obj == nil || obj.Pkg() != src.Types || set.has(obj) {
-				return
-			}
-			if owner := ownerOf(owners, obj); owner != nil {
-				// Reaching into an unexported type of the package is a
-				// use of that type.
-				if !set.has(owner) && !owner.Exported() && owner.Parent() == scope {
-					depend(owner, d)
+	for {
+		for len(queue) > 0 {
+			d := queue[0]
+			queue = queue[1:]
+			inspectSpan(d, func(n ast.Node) {
+				id, ok := n.(*ast.Ident)
+				if !ok {
+					return
 				}
-				if !set.has(owner) && !obj.Exported() {
-					ma.memberUses = append(ma.memberUses, fmt.Sprintf("%s.%s at %s", owner.Name(), obj.Name(), s.position(s.root, id.Pos())))
+				obj := src.TypesInfo.Uses[id]
+				if obj == nil || obj.Pkg() != src.Types || set.has(obj) {
+					return
 				}
-				return
+				if owner := ownerOf(owners, obj); owner != nil {
+					// Reaching into an unexported type of the package is a
+					// use of that type.
+					if !set.has(owner) && !owner.Exported() && owner.Parent() == scope {
+						depend(owner, d)
+					}
+					if !obj.Exported() {
+						rawMembers = append(rawMembers, rawMember{owner, memberUse{obj.Name(), s.position(s.root, id.Pos())}})
+					}
+					return
+				}
+				if obj.Parent() != scope {
+					return
+				}
+				depend(obj, d)
+			})
+		}
+		// A shared helper whose other users were pulled since is pulled
+		// too.
+		settled := true
+		for obj := range ma.shared {
+			if others := s.usersOutside(obj, set); len(others) == 0 {
+				delete(ma.shared, obj)
+				pullObj(obj, nil)
+				settled = false
 			}
-			if obj.Parent() != scope {
-				return
-			}
-			depend(obj, d)
-		})
+		}
+		if settled {
+			break
+		}
 	}
 	sort.Slice(ma.exportedStays, func(i, j int) bool { return ma.exportedStays[i].Name() < ma.exportedStays[j].Name() })
+	for _, m := range rawMembers {
+		if set.has(m.owner) {
+			continue
+		}
+		if _, asked := ma.shared[m.owner]; asked {
+			continue
+		}
+		ma.memberUses[m.owner] = append(ma.memberUses[m.owner], m.use)
+	}
 
 	// Uses of the moved set from the rest of the package, test files
 	// included. Variants type-check the package separately, so objects
 	// are matched by key, not identity.
-	setKeys := make(map[string]bool)
+	setKeys := make(map[string]types.Object)
 	setNames := make(map[string]bool)
 	for _, d := range set.decls {
-		setKeys[objectKey(s.fset, d.obj)] = true
+		setKeys[objectKey(s.fset, d.obj)] = d.obj
 		setNames[d.obj.Name()] = true
 	}
 	forcedKeys := make(map[string]bool)
 	for obj := range ma.forcedPulled {
 		forcedKeys[objectKey(s.fset, obj)] = true
 	}
+	exportedSeen := make(map[types.Object]bool)
 	for _, p := range s.variantsOf(src) {
 		owners := fieldOwners(p.Types)
 		for id, obj := range p.TypesInfo.Uses {
@@ -318,32 +414,63 @@ func (s *snapshot) analyseMove(set *removalSet, decisions Decisions, force bool)
 				continue
 			}
 			target := obj
-			if owner := ownerOf(owners, obj); owner != nil {
+			owner := ownerOf(owners, obj)
+			if owner != nil {
 				target = owner
 			}
 			if !setNames[target.Name()] {
 				continue
 			}
 			key := objectKey(s.fset, target)
+			setObj, inSet := setKeys[key]
 			// Users of a helper pulled along by decision are reported as
 			// follow-ups, not as blockers.
-			if !setKeys[key] || forcedKeys[key] {
+			if !inSet || forcedKeys[key] {
 				continue
 			}
 			pos := s.position(s.root, id.Pos())
-			if obj.Exported() {
+			switch {
+			case obj.Exported():
 				ma.incomingExported = append(ma.incomingExported, pos)
-			} else {
-				ma.incomingUnexported = append(ma.incomingUnexported, fmt.Sprintf("%s at %s", qualifiedName(obj), pos))
+			case owner != nil:
+				ma.incomingMembers[owner.Name()+"."+obj.Name()] = append(ma.incomingMembers[owner.Name()+"."+obj.Name()], pos)
+			case export[obj.Name()]:
+				decided[obj.Name()] = true
+				ma.incomingExported = append(ma.incomingExported, pos)
+				if !exportedSeen[setObj] {
+					exportedSeen[setObj] = true
+					ma.exported = append(ma.exported, setObj)
+				}
+			default:
+				ma.exportable[setObj] = append(ma.exportable[setObj], pos)
 			}
 		}
 	}
 	ma.incomingExported = sortedPositions(ma.incomingExported)
-	sort.Strings(ma.incomingUnexported)
-	ma.incomingUnexported = slices.Compact(ma.incomingUnexported)
-	sort.Strings(ma.memberUses)
-	ma.memberUses = slices.Compact(ma.memberUses)
+	for k := range ma.incomingMembers {
+		ma.incomingMembers[k] = sortedPositions(ma.incomingMembers[k])
+	}
+	for k := range ma.exportable {
+		ma.exportable[k] = sortedPositions(ma.exportable[k])
+	}
+	for _, name := range slices.Sorted(maps.Keys(toSet(append(slices.Clone(decisions.Pull), decisions.Export...)))) {
+		if !decided[name] {
+			ma.unused = append(ma.unused, name)
+		}
+	}
 	return ma
+}
+
+// sortedObjects orders objects by name, then position.
+func sortedObjects[T types.Object](seq func(yield func(T) bool)) []T {
+	out := slices.Collect(seq)
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Name() != out[j].Name() {
+			return out[i].Name() < out[j].Name()
+		}
+		return out[i].Pos() < out[j].Pos()
+	})
+	return out
 }
 
 // usersOutside lists the uses of obj in its package, test files included,
@@ -437,3 +564,5 @@ func toSet(names []string) map[string]bool {
 	}
 	return m
 }
+
+var _ token.Pos
