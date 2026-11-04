@@ -12,46 +12,51 @@ import (
 	"golang.org/x/tools/go/packages"
 )
 
-// addTarget resolves where add puts its declarations: the package and
-// the file, which may not exist yet.
-type addTarget struct {
+// fileTarget is where add puts its declarations or move sends its code:
+// the package and the file, which may not exist yet.
+type fileTarget struct {
 	pkg     *packages.Package
 	file    string // absolute path
 	newFile bool
 }
 
-// resolveAddTarget accepts a package import path (a new file is named
-// after the first declaration) or an absolute file path inside a loaded
-// package directory. req.File is the fallback when Target is empty.
-func (s *snapshot) resolveAddTarget(req Request, decls []ast.Decl) (addTarget, error) {
-	target := req.Target
+// resolveTarget accepts a package import path, in which case the file is
+// newName inside that package's directory, or an absolute file path in a
+// loaded package directory. A file that exists must belong to a loaded
+// package.
+func (s *snapshot) resolveTarget(target, newName string) (fileTarget, error) {
 	if target == "" {
-		target = req.File
+		return fileTarget{}, fmt.Errorf("target (package import path or file path) is required")
 	}
-	if target == "" {
-		return addTarget{}, fmt.Errorf("target (package import path or file path) is required")
-	}
+	var pkg *packages.Package
+	abs := target
 	if !filepath.IsAbs(target) {
-		p := s.packageByPath(target)
-		if p == nil {
-			return addTarget{}, fmt.Errorf("package %s not found in workspace", target)
+		pkg = s.packageByPath(target)
+		if pkg == nil {
+			return fileTarget{}, fmt.Errorf("package %s not found in workspace", target)
 		}
-		return addTarget{pkg: p, file: filepath.Join(p.Dir, fileNameFor(decls)), newFile: true}, nil
+		abs = filepath.Join(pkg.Dir, newName)
 	}
-	abs := canonical(target)
+	abs = canonical(abs)
 	if pkgs := s.byFile[abs]; len(pkgs) > 0 {
-		return addTarget{pkg: pkgs[0], file: abs}, nil
+		return fileTarget{pkg: pkgs[0], file: abs}, nil
 	}
 	if _, err := os.Stat(abs); err == nil {
-		return addTarget{}, fmt.Errorf("file %s exists but is not part of any loaded package", target)
+		return fileTarget{}, fmt.Errorf("file %s exists but is not part of any loaded package", relPath(s.root, abs))
 	}
-	dir := filepath.Dir(abs)
-	for _, p := range s.pkgs {
-		if p.ID == p.PkgPath && canonical(p.Dir) == dir {
-			return addTarget{pkg: p, file: abs, newFile: true}, nil
+	if pkg == nil {
+		dir := canonical(filepath.Dir(abs))
+		for _, p := range s.pkgs {
+			if p.ID == p.PkgPath && canonical(p.Dir) == dir {
+				pkg = p
+				break
+			}
+		}
+		if pkg == nil {
+			return fileTarget{}, fmt.Errorf("directory %s holds no loaded package", dir)
 		}
 	}
-	return addTarget{}, fmt.Errorf("directory %s holds no loaded package", dir)
+	return fileTarget{pkg: pkg, file: abs, newFile: true}, nil
 }
 
 // fileNameFor derives a file name from the first declaration: snake case
@@ -62,8 +67,8 @@ func fileNameFor(decls []ast.Decl) string {
 		return "new.go"
 	}
 	name := names[0]
-	if strings.HasPrefix(name, "method ") {
-		name = strings.TrimPrefix(name, "method ")
+	if after, ok := strings.CutPrefix(name, "method "); ok {
+		name = after
 		name = name[:strings.IndexByte(name, '.')]
 	} else {
 		name = bareName(name)
@@ -93,7 +98,11 @@ func (s *snapshot) planAdd(req Request) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	target, err := s.resolveAddTarget(req, decls)
+	target := req.Target
+	if target == "" {
+		target = req.File
+	}
+	dest, err := s.resolveTarget(target, fileNameFor(decls))
 	if err != nil {
 		return nil, err
 	}
@@ -104,14 +113,14 @@ func (s *snapshot) planAdd(req Request) (*Report, error) {
 	}
 	r := &Report{Op: "add", Subject: strings.Join(names, ", ")}
 
-	scope := target.pkg.Types.Scope()
-	index := s.decls(target.pkg)
+	scope := dest.pkg.Types.Scope()
+	index := s.decls(dest.pkg)
 	for _, d := range decls {
 		if fn, ok := d.(*ast.FuncDecl); ok && fn.Recv != nil {
-			recv := recvName(fn.Recv)
+			recv := receiverName(fn.Recv)
 			tn, ok := scope.Lookup(recv).(*types.TypeName)
 			if !ok {
-				r.block(fmt.Sprintf("method %s.%s: type %s is not declared in %s", recv, fn.Name.Name, recv, target.pkg.PkgPath),
+				r.block(fmt.Sprintf("method %s.%s: type %s is not declared in %s", recv, fn.Name.Name, recv, dest.pkg.PkgPath),
 					"add the type first, or target the package that declares it")
 				continue
 			}
@@ -130,14 +139,14 @@ func (s *snapshot) planAdd(req Request) (*Report, error) {
 			}
 		}
 	}
-	where := relPath(s.root, target.file)
-	if target.newFile {
+	where := relPath(s.root, dest.file)
+	if dest.newFile {
 		where += " (new file)"
-	} else if f := fileSyntax(target.pkg, target.file); f != nil && isGenerated(f) {
+	} else if f := fileSyntax(dest.pkg, dest.file); f != nil && isGenerated(f) {
 		r.block(where+" is generated code", "target another file of the package, or change the generator")
 	}
 
-	summary := fmt.Sprintf("adds %s to %s in package %s", strings.Join(names, ", "), where, target.pkg.PkgPath)
+	summary := fmt.Sprintf("adds %s to %s in package %s", strings.Join(names, ", "), where, dest.pkg.PkgPath)
 	if len(imports) > 0 {
 		summary += "; imports " + strings.Join(imports, ", ")
 	}

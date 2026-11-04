@@ -8,6 +8,7 @@ import (
 	"go/token"
 	"go/types"
 	"sort"
+	"strconv"
 	"strings"
 
 	"golang.org/x/tools/go/packages"
@@ -253,6 +254,24 @@ func (d decl) label() string {
 	return objectKind(d.obj) + " " + qualifiedName(d.obj)
 }
 
+// syntaxLabel renders the declaration keyword and name the way declNames
+// does for parsed source: "type Name" for every type, interface or alias
+// included, "method T.Name", "func Name", "var Name", "const Name".
+func (d decl) syntaxLabel() string {
+	switch n := d.node.(type) {
+	case *ast.FuncDecl:
+		if n.Recv != nil {
+			return "method " + receiverName(n.Recv) + "." + d.name.Name
+		}
+		return "func " + d.name.Name
+	case *ast.TypeSpec:
+		return "type " + d.name.Name
+	case *ast.ValueSpec:
+		return strings.ToLower(d.gen.Tok.String()) + " " + d.name.Name
+	}
+	return d.label()
+}
+
 // decls indexes every top-level declaration of p by object. Methods are
 // included; grouped specs each get their own entry.
 func (s *snapshot) decls(p *packages.Package) map[types.Object]decl {
@@ -286,7 +305,8 @@ func (s *snapshot) decls(p *packages.Package) map[types.Object]decl {
 }
 
 // methodsOf returns the declared methods of a named type, from the index,
-// in source order.
+// in source order. Files are ordered by name: token.Pos order across
+// files depends on parse order, which varies between loads.
 func methodsOf(index map[types.Object]decl, tn *types.TypeName) []decl {
 	var out []decl
 	for obj, d := range index {
@@ -296,43 +316,103 @@ func methodsOf(index map[types.Object]decl, tn *types.TypeName) []decl {
 			}
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].name.Pos() < out[j].name.Pos() })
+	sort.Slice(out, func(i, j int) bool {
+		pi, pj := out[i].pkg.Fset.Position(out[i].name.Pos()), out[j].pkg.Fset.Position(out[j].name.Pos())
+		if pi.Filename != pj.Filename {
+			return pi.Filename < pj.Filename
+		}
+		return pi.Offset < pj.Offset
+	})
 	return out
 }
 
 // memberOwner returns the named type declaring a method or field, or nil
-// for anything else.
+// for anything else. A field costs a scan of its package scope; callers
+// resolving many objects use fieldOwners.
 func memberOwner(obj types.Object) *types.TypeName {
 	switch o := obj.(type) {
 	case *types.Func:
-		if recv := o.Type().(*types.Signature).Recv(); recv != nil {
-			t := recv.Type()
-			if ptr, ok := t.(*types.Pointer); ok {
-				t = ptr.Elem()
-			}
-			if named, ok := t.(*types.Named); ok {
-				return named.Obj()
-			}
-		}
+		return methodOwner(o)
 	case *types.Var:
 		if o.IsField() && o.Pkg() != nil {
-			scope := o.Pkg().Scope()
-			for _, name := range scope.Names() {
-				tn, ok := scope.Lookup(name).(*types.TypeName)
-				if !ok {
-					continue
-				}
-				if st, ok := tn.Type().Underlying().(*types.Struct); ok {
-					for f := range st.Fields() {
-						if f == o {
-							return tn
-						}
-					}
-				}
-			}
+			return fieldOwners(o.Pkg())[o]
 		}
 	}
 	return nil
+}
+
+// methodOwner returns the named type a method is declared on, or nil.
+func methodOwner(fn *types.Func) *types.TypeName {
+	recv := fn.Type().(*types.Signature).Recv()
+	if recv == nil {
+		return nil
+	}
+	t := recv.Type()
+	if ptr, ok := t.(*types.Pointer); ok {
+		t = ptr.Elem()
+	}
+	if named, ok := t.(*types.Named); ok {
+		return named.Obj()
+	}
+	return nil
+}
+
+// fieldOwners maps every field of a package-level struct type of pkg to
+// that type, in one pass over the scope.
+func fieldOwners(pkg *types.Package) map[types.Object]*types.TypeName {
+	out := make(map[types.Object]*types.TypeName)
+	scope := pkg.Scope()
+	for _, name := range scope.Names() {
+		tn, ok := scope.Lookup(name).(*types.TypeName)
+		if !ok {
+			continue
+		}
+		if st, ok := tn.Type().Underlying().(*types.Struct); ok {
+			for f := range st.Fields() {
+				out[f] = tn
+			}
+		}
+	}
+	return out
+}
+
+// ownerOf is memberOwner with the field index precomputed.
+func ownerOf(owners map[types.Object]*types.TypeName, obj types.Object) *types.TypeName {
+	if fn, ok := obj.(*types.Func); ok {
+		return methodOwner(fn)
+	}
+	return owners[obj]
+}
+
+// variantsOf lists the package variants sharing p's import path: the
+// plain package and, with tests, the in-package test variant. Test mains
+// are left out.
+func (s *snapshot) variantsOf(p *packages.Package) []*packages.Package {
+	var out []*packages.Package
+	for _, v := range s.pkgs {
+		if v.PkgPath == p.PkgPath && v.TypesInfo != nil && !isTestMain(v) {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
+// syntaxAt returns the parsed file of p holding pos, or nil.
+func (s *snapshot) syntaxAt(p *packages.Package, pos token.Pos) *ast.File {
+	for _, f := range p.Syntax {
+		if pos >= f.FileStart && pos < f.FileEnd {
+			return f
+		}
+	}
+	return nil
+}
+
+// firstN returns at most the first n elements.
+func firstN[T any](in []T, n int) []T {
+	if len(in) <= n {
+		return in
+	}
+	return in[:n]
 }
 
 // parseSource parses declaration text without a package clause. Leading
@@ -346,7 +426,11 @@ func parseSource(src string) (decls []ast.Decl, imports []string, err error) {
 	for _, d := range f.Decls {
 		if g, ok := d.(*ast.GenDecl); ok && g.Tok == token.IMPORT {
 			for _, spec := range g.Specs {
-				imports = append(imports, strings.Trim(spec.(*ast.ImportSpec).Path.Value, `"`))
+				path, err := strconv.Unquote(spec.(*ast.ImportSpec).Path.Value)
+				if err != nil {
+					return nil, nil, fmt.Errorf("import %s: %w", spec.(*ast.ImportSpec).Path.Value, err)
+				}
+				imports = append(imports, path)
 			}
 			continue
 		}
@@ -364,7 +448,7 @@ func declNames(d ast.Decl) []string {
 	switch d := d.(type) {
 	case *ast.FuncDecl:
 		if d.Recv != nil {
-			return []string{"method " + recvName(d.Recv) + "." + d.Name.Name}
+			return []string{"method " + receiverName(d.Recv) + "." + d.Name.Name}
 		}
 		return []string{"func " + d.Name.Name}
 	case *ast.GenDecl:
@@ -382,27 +466,6 @@ func declNames(d ast.Decl) []string {
 		return out
 	}
 	return nil
-}
-
-// recvName returns the base type name of a receiver list.
-func recvName(recv *ast.FieldList) string {
-	if recv == nil || len(recv.List) == 0 {
-		return ""
-	}
-	t := recv.List[0].Type
-	if star, ok := t.(*ast.StarExpr); ok {
-		t = star.X
-	}
-	if idx, ok := t.(*ast.IndexExpr); ok {
-		t = idx.X
-	}
-	if idx, ok := t.(*ast.IndexListExpr); ok {
-		t = idx.X
-	}
-	if id, ok := t.(*ast.Ident); ok {
-		return id.Name
-	}
-	return ""
 }
 
 // bareName strips the kind label from a declNames entry.

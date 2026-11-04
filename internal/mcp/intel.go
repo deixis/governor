@@ -170,7 +170,7 @@ func (h *handler) fixHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p f
 type planParams struct {
 	Op        string         `json:"op" jsonschema:"One of add, remove, replace, move."`
 	File      string         `json:"file,omitempty" jsonschema:"Absolute path of a file where symbol is visible (remove, replace, move). For add without target: the file to add to."`
-	Symbol    string         `json:"symbol,omitempty" jsonschema:"Foo, T.Method, T.Field or pkg.Symbol (remove, replace, move)."`
+	Symbol    string         `json:"symbol,omitempty" jsonschema:"Foo, T.Method or pkg.Symbol, a top-level declaration (remove, replace, move)."`
 	Source    string         `json:"source,omitempty" jsonschema:"Go declaration text, no package clause, imports allowed first (add, replace)."`
 	Target    string         `json:"target,omitempty" jsonschema:"Package import path or absolute file path: where add puts the code, where move sends the symbol."`
 	Decisions *planDecisions `json:"decisions,omitempty" jsonschema:"Answers to a previous plan's questions (move)."`
@@ -212,7 +212,7 @@ func (h *handler) planHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p 
 func registerIntelTools(s *sdkmcp.Server, h *handler) {
 	sdkmcp.AddTool(s, &sdkmcp.Tool{
 		Name: "gov_plan",
-		Description: `Impact of an intended change, without changing anything. Run before gov_apply.
+		Description: `Impact of an intended change, without changing anything. Run before editing.
 
 Pass "op" and the fields it needs:
   add:     "source" (declarations) and "target" (package path, or file path; a new file is

@@ -7,6 +7,8 @@ import (
 	"go/printer"
 	"go/token"
 	"go/types"
+	"maps"
+	"slices"
 	"strings"
 )
 
@@ -36,14 +38,24 @@ func (s *snapshot) planReplace(req Request) (*Report, error) {
 	old := set.decls[0]
 	r := &Report{Op: "replace", Subject: req.Symbol}
 
-	if old.label() != newNames[0] {
-		r.block(fmt.Sprintf("source declares %s, the symbol is %s", newNames[0], old.label()),
+	if old.syntaxLabel() != newNames[0] {
+		r.block(fmt.Sprintf("source declares %s, the symbol is %s", newNames[0], old.syntaxLabel()),
 			"keep the name and kind; to rename or change kind, use remove then add")
 	}
 	if old.gen != nil && len(old.gen.Specs) > 1 {
 		if g, ok := decls[0].(*ast.GenDecl); ok && len(g.Specs) != 1 {
 			r.block(req.Symbol+" is one spec inside a grouped declaration", "give one spec as source, without the group")
 		}
+	}
+	if vs, ok := old.node.(*ast.ValueSpec); ok && len(vs.Names) > 1 {
+		var others []string
+		for _, n := range vs.Names {
+			if n != old.name {
+				others = append(others, n.Name)
+			}
+		}
+		r.block(req.Symbol+" shares its spec with "+strings.Join(others, ", "),
+			"split the spec so each name has its own, then replace")
 	}
 	if isGenerated(old.file) {
 		r.block(s.fileOf(old)+" is generated code", "change the generator instead")
@@ -59,9 +71,9 @@ func (s *snapshot) planReplace(req Request) (*Report, error) {
 		switch oldNode := old.node.(type) {
 		case *ast.FuncDecl:
 			newFn := decls[0].(*ast.FuncDecl)
-			if printNode(s.fset, oldNode.Type) != printNode(token.NewFileSet(), newFn.Type) {
+			if signatureKey(oldNode) != signatureKey(newFn) {
 				summary += fmt.Sprintf("; signature changes from %s to %s",
-					printNode(s.fset, signatureOnly(oldNode)), printNode(token.NewFileSet(), signatureOnly(newFn)))
+					printNode(signatureOnly(oldNode)), printNode(signatureOnly(newFn)))
 				r.followUp("Update the callers", s.callerLines(old.obj.(*types.Func)))
 				if m := old.obj.(*types.Func); m.Type().(*types.Signature).Recv() != nil {
 					r.followUp("Re-check the interface methods it implemented", s.methodLinks(m))
@@ -69,16 +81,16 @@ func (s *snapshot) planReplace(req Request) (*Report, error) {
 			}
 		case *ast.TypeSpec:
 			newSpec := decls[0].(*ast.GenDecl).Specs[0].(*ast.TypeSpec)
-			if printNode(s.fset, oldNode.Type) != printNode(token.NewFileSet(), newSpec.Type) {
-				diff := shapeDiff(s.fset, oldNode.Type, newSpec.Type)
+			if printNode(oldNode.Type) != printNode(newSpec.Type) {
+				diff := shapeDiff(oldNode.Type, newSpec.Type)
 				summary += "; shape changes: " + strings.Join(diff, ", ")
-				uses := s.usesOutside(set)
+				uses, _ := s.usesOutside(set)
 				var lines []string
-				for path, positions := range uses {
-					lines = append(lines, fmt.Sprintf("%s (%s)", path, plural(len(positions), "use")))
+				for _, path := range slices.Sorted(maps.Keys(uses)) {
+					lines = append(lines, fmt.Sprintf("%s (%s)", path, plural(len(uses[path]), "use")))
 				}
 				r.followUp("Check the packages using it against the removed or changed members", lines)
-				if links := s.interfaceLinks(set.pkg, old.obj.(*types.TypeName)); len(links) > 0 {
+				if links := s.interfaceLinks(old.obj.(*types.TypeName)); len(links) > 0 {
 					r.followUp("Re-check interface satisfaction", links)
 				}
 			}
@@ -91,15 +103,48 @@ func (s *snapshot) planReplace(req Request) (*Report, error) {
 
 // signatureOnly copies a FuncDecl without body or doc, for printing.
 func signatureOnly(fn *ast.FuncDecl) *ast.FuncDecl {
-	cp := *fn
-	cp.Body = nil
+	cp := stripBody(fn)
 	cp.Doc = nil
+	return cp
+}
+
+// signatureKey renders what callers and interfaces see of a function:
+// receiver, parameter and result types, without the names. Renaming a
+// parameter is not a signature change.
+func signatureKey(fn *ast.FuncDecl) string {
+	cp := signatureOnly(fn)
+	cp.Recv = unnamedFields(fn.Recv)
+	ft := *fn.Type
+	ft.Params = unnamedFields(fn.Type.Params)
+	ft.Results = unnamedFields(fn.Type.Results)
+	cp.Type = &ft
+	return printNode(cp)
+}
+
+// unnamedFields copies a field list with one anonymous field per name,
+// so (a, b int) and (x int, y int) render the same.
+func unnamedFields(fl *ast.FieldList) *ast.FieldList {
+	if fl == nil {
+		return nil
+	}
+	cp := *fl
+	cp.List = make([]*ast.Field, 0, len(fl.List))
+	for _, f := range fl.List {
+		for range max(len(f.Names), 1) {
+			fc := *f
+			fc.Names, fc.Doc, fc.Comment = nil, nil, nil
+			cp.List = append(cp.List, &fc)
+		}
+	}
 	return &cp
 }
 
-func printNode(fset *token.FileSet, n ast.Node) string {
+// printNode renders n on one line. An empty FileSet leaves every position
+// unresolved, so the source layout of the node does not affect the text
+// and nodes from different FileSets compare.
+func printNode(n ast.Node) string {
 	var b bytes.Buffer
-	_ = printer.Fprint(&b, fset, n)
+	_ = printer.Fprint(&b, token.NewFileSet(), n)
 	return b.String()
 }
 
@@ -159,20 +204,20 @@ func (s *snapshot) methodLinks(m *types.Func) []string {
 }
 
 // shapeDiff compares struct fields or interface methods by name.
-func shapeDiff(fset *token.FileSet, oldT, newT ast.Expr) []string {
-	oldM, newM := members(fset, oldT), members(fset, newT)
+func shapeDiff(oldT, newT ast.Expr) []string {
+	oldM, newM := members(oldT), members(newT)
 	if oldM == nil || newM == nil {
-		return []string{printNode(fset, oldT) + " becomes " + printNode(token.NewFileSet(), newT)}
+		return []string{printNode(oldT) + " becomes " + printNode(newT)}
 	}
 	var out []string
-	for name, sig := range oldM {
+	for _, name := range slices.Sorted(maps.Keys(oldM)) {
 		if n, ok := newM[name]; !ok {
 			out = append(out, "removed "+name)
-		} else if n != sig {
+		} else if n != oldM[name] {
 			out = append(out, "changed "+name)
 		}
 	}
-	for name := range newM {
+	for _, name := range slices.Sorted(maps.Keys(newM)) {
 		if _, ok := oldM[name]; !ok {
 			out = append(out, "added "+name)
 		}
@@ -183,7 +228,7 @@ func shapeDiff(fset *token.FileSet, oldT, newT ast.Expr) []string {
 	return out
 }
 
-func members(fset *token.FileSet, t ast.Expr) map[string]string {
+func members(t ast.Expr) map[string]string {
 	var list *ast.FieldList
 	switch t := t.(type) {
 	case *ast.StructType:
@@ -195,7 +240,7 @@ func members(fset *token.FileSet, t ast.Expr) map[string]string {
 	}
 	out := make(map[string]string)
 	for _, f := range list.List {
-		sig := printNode(fset, f.Type)
+		sig := printNode(f.Type)
 		if len(f.Names) == 0 {
 			out[sig] = sig
 			continue
