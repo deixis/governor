@@ -120,7 +120,7 @@ Agent harness hook for shell commands. `governor hook bash` reads a Claude Code 
 |---|---|
 | `go test [flags] pkgs`, `go vet pkgs`, `staticcheck pkgs`, `go tool staticcheck pkgs`, `golangci-lint run pkgs` | `governor check pkgs` (`--fix` keeps `-fix`, `-timeout` and `-v` pass through) |
 | `goimports -w`, `gofmt -w`, `gofumpt -w` on Go files | `governor fix files` |
-| `sed -i`, `perl -i`, `sd`, `awk -i inplace` on a Go file | refused, with a pointer to the editor tool and `gov_diagnostics` |
+| `sed -i`, `perl -i`, `sd`, `awk -i inplace` on a Go file | refused, with a pointer to the editor tool and `gov_fix` |
 
 Targeted test runs (`-run`, `-bench`, `-fuzz`, profiles, `-json`) and read-only formatter modes (`-l`, `-d`) run as is. Every command in a pipeline, `&&` chain, loop or substitution is inspected. Pass a command as arguments to see what would happen:
 
@@ -168,21 +168,15 @@ The working directory is set to the workspace root automatically.
 
 ### Code intelligence
 
-Backed by an in-process, cached `go/packages` load of the workspace. The first call after a source change reloads; later calls hit the cache. `gov_outline`, `gov_package_api` and `gov_definition` also reach the standard library and go.mod dependencies: a package outside the workspace is loaded with source on first use and cached with the snapshot. `gov_symbol_references`, `gov_callers`, `gov_callees` and `gov_implementations` on a symbol from such a package search inside that package as well.
+Backed by an in-process, cached `go/packages` load of the workspace. The first call after a source change reloads; later calls hit the cache. `gov_outline` and `gov_symbol` also reach the standard library and go.mod dependencies: a package outside the workspace is loaded with source on first use and cached with the snapshot, and a symbol from such a package is searched inside that package as well.
 
 | Tool | Description |
 |---|---|
-| `gov_diagnostics` | Parse, build and type errors |
-| `gov_package_api` | Exported API of packages in Go syntax, workspace or dependency |
 | `gov_search` | Fuzzy symbol search |
+| `gov_outline` | Top-level declarations of a file, directory or package with line ranges; workspace, dependency, or any Go file on disk (syntax only). `api` renders the exported API in Go syntax instead |
+| `gov_symbol` | One symbol: definition, references, callers, callees, implementations; `show` picks the sections, default definition and references |
 | `gov_file_context` | Cross-file and cross-package dependencies of a file |
-| `gov_symbol_references` | Find symbol references |
-| `gov_definition` | Declaration site, signature and doc of a symbol |
-| `gov_implementations` | Interface satisfaction, both directions, type or method level |
-| `gov_callers` | Static call sites of a function with their enclosing function |
-| `gov_callees` | Calls made inside a function body |
-| `gov_outline` | Top-level declarations of a file, directory or package with line ranges; workspace, dependency, or any Go file on disk (syntax only) |
-| `gov_fix` | Repair imports, gofumpt, modernize rewrites, then diagnostics for the files |
+| `gov_fix` | Repair imports, gofumpt, modernize rewrites, then diagnostics for the files; with no files, workspace diagnostics only |
 
 ### Fix on every edit
 

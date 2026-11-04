@@ -4,7 +4,7 @@ import (
 	"strings"
 )
 
-const editBlocked = "Blocked: in-place edit of a Go file with a text tool. Edit each site with the Edit or Write tool, or use ast-grep (sg) for a repeated pattern. After changing a definition, run gov_fix on its file and gov_diagnostics for the workspace: they list every site that must change."
+const editBlocked = "Blocked: in-place edit of a Go file with a text tool. Edit each site with the Edit or Write tool, or use ast-grep (sg) for a repeated pattern. After changing a definition, run gov_fix on its file, then gov_fix with no files for the workspace: they list every site that must change."
 
 // blocked returns the reason a command must not run, or "". goFiles says
 // whether the command, or the shell input around it, names a Go file:

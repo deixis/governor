@@ -13,15 +13,15 @@ Governor exposes a type-checked view of the workspace as `gov_*` MCP tools. They
 |---|---|
 | Where is something named like X? | `gov_search({"query":"X"})` |
 | What does this file or package contain? | `gov_outline({"target": path-or-import-path})`, then read line ranges |
-| What is this identifier? | `gov_definition({"file", "symbol"})` |
-| Which types satisfy this interface? Which interfaces does this type satisfy? | `gov_implementations` |
-| Who calls this? What does it call? | `gov_callers`, `gov_callees` |
-| Every reference, for a rename or signature change | `gov_symbol_references` |
+| What is this identifier, and where is it used? | `gov_symbol({"file", "symbol"})`: definition and references by default |
+| Which types satisfy this interface? Which interfaces does this type satisfy? | `gov_symbol` with `"show":["implementations"]` |
+| Who calls this? What does it call? | `gov_symbol` with `"show":["callers","callees"]` |
+| Blast radius before a rename or signature change | `gov_symbol` with `"show":["references","callers","implementations"]`, one call |
 | What does this file depend on? | `gov_file_context` |
-| What does this package export? | `gov_package_api` |
-| What does a dependency or stdlib package look like? | `gov_outline` or `gov_package_api` with its import path; `gov_definition` with `pkg.Symbol` |
-| Where is a library symbol used, before swapping the library? | `gov_symbol_references` with `pkg.Symbol`, from a file importing it |
-| How does a library use its own type, or what does a library function call? | `gov_symbol_references`, `gov_callers`, `gov_callees`, `gov_implementations` with `pkg.Symbol`; they look inside the library's package too |
+| What does this package export? | `gov_outline` with `"api":true` |
+| What does a dependency or stdlib package look like? | `gov_outline` with its import path, `"api":true` for the exported API; `gov_symbol` with `pkg.Symbol` |
+| Where is a library symbol used, before swapping the library? | `gov_symbol` with `pkg.Symbol` and `"show":["references"]`, from a file importing it |
+| How does a library use its own type, or what does a library function call? | `gov_symbol` with `pkg.Symbol`; references, callers, callees and implementations look inside the library's package too |
 | What is in a file or directory of another repository? | `git clone --depth 1` it, then `gov_outline` on the file or directory. Syntax only, no `gh api` per file, no `rg '^func'` |
 
 Symbol forms: `Foo`, `T.Method`, `T.Field`, `pkg.Symbol`, `pkg.T.Method`. `pkg` is an import name in the given file.
@@ -30,8 +30,8 @@ The tools resolve any import path the module can, so the standard library and ev
 
 ## Editing
 
-1. Measure blast radius first: `gov_symbol_references`, plus `gov_callers` for signature changes and `gov_implementations` for interfaces.
-2. Edit with the Edit or Write tool, or `sg` (ast-grep) for a repeated pattern. Never `sed`, `perl`, `sd` or `awk` on a Go file; the plugin hook refuses them. To migrate a type or signature, change the definition, run `gov_fix` on its file, then `gov_diagnostics` with no arguments: it lists every site that must change.
+1. Measure blast radius first: `gov_symbol` with `references`, plus `callers` for signature changes and `implementations` for interfaces, in one call.
+2. Edit with the Edit or Write tool, or `sg` (ast-grep) for a repeated pattern. Never `sed`, `perl`, `sd` or `awk` on a Go file; the plugin hook refuses them. To migrate a type or signature, change the definition, run `gov_fix` on its file, then `gov_fix` with no files: it lists every site that must change.
 3. The plugin hook runs `governor fix` on every edited `.go` file and shows the result. It repairs imports, formats with gofumpt, applies safe modernize rewrites, and lists remaining type errors. Because it rewrites the file, re-read before editing again. Without the hook, call `gov_fix({"files":[...]})` yourself.
 4. Fix any reported diagnostics, then `gov_check({"packages":["./changed/pkg/..."]})` before declaring the work done. Use `gov_inspect` to drill into failures instead of re-running.
 5. Do not run `go test`, `go vet`, `golangci-lint`, `staticcheck` or `goimports` in the shell. The plugin hook rewrites them to `governor check` or `governor fix` and tells you so; say so to the user when it happens. Test flags such as `-race` belong in `.governor.yaml` under `test.args`. A targeted run (`go test -run TestX ./pkg`) is allowed as is.
