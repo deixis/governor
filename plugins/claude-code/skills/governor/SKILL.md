@@ -31,9 +31,10 @@ The tools resolve any import path the module can, so the standard library and ev
 ## Editing
 
 1. Measure blast radius first: `gov_symbol_references`, plus `gov_callers` for signature changes and `gov_implementations` for interfaces.
-2. Edit with your normal tools.
+2. Edit with the Edit or Write tool, or `sg` (ast-grep) for a repeated pattern. Never `sed`, `perl`, `sd` or `awk` on a Go file; the plugin hook refuses them. To migrate a type or signature, change the definition, run `gov_fix` on its file, then `gov_diagnostics` with no arguments: it lists every site that must change.
 3. The plugin hook runs `governor fix` on every edited `.go` file and shows the result. It repairs imports, formats with gofumpt, applies safe modernize rewrites, and lists remaining type errors. Because it rewrites the file, re-read before editing again. Without the hook, call `gov_fix({"files":[...]})` yourself.
 4. Fix any reported diagnostics, then `gov_check({"packages":["./changed/pkg/..."]})` before declaring the work done. Use `gov_inspect` to drill into failures instead of re-running.
+5. Do not run `go test`, `go vet`, `golangci-lint`, `staticcheck` or `goimports` in the shell. The plugin hook rewrites them to `governor check` or `governor fix` and tells you so; say so to the user when it happens. Test flags such as `-race` belong in `.governor.yaml` under `test.args`. A targeted run (`go test -run TestX ./pkg`) is allowed as is.
 
 ## Setup
 

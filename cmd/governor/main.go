@@ -59,6 +59,8 @@ func main() {
 		err = auditMain(args)
 	case "fix":
 		err = fixMain(args)
+	case "hook":
+		err = hookMain(args)
 	case "version":
 		fmt.Println(governor.Version)
 	case "help", "-h", "--help":
@@ -81,6 +83,7 @@ Commands:
   check       Run the check pipeline (fix, test, lint, staticcheck)
   audit       Run audit checks (coverage, complexity, deadcode, dupl, vulncheck)
   fix         Repair imports, format, modernise files and report diagnostics
+  hook        Agent harness hook: steer shell commands to governor
   mcp         Start the MCP server
   version     Print the version
   help        Show this help
