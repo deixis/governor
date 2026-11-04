@@ -132,7 +132,7 @@ func (h *handler) calleesHandler(ctx context.Context, _ *sdkmcp.CallToolRequest,
 }
 
 type outlineParams struct {
-	Target string `json:"target" jsonschema:"Absolute path to a Go file, or a package import path."`
+	Target string `json:"target" jsonschema:"Absolute path to a Go file or directory, or a package import path."`
 }
 
 func (h *handler) outlineHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p outlineParams) (*sdkmcp.CallToolResult, any, error) {
@@ -256,7 +256,8 @@ Call after every edit instead of gov_diagnostics; it is a superset.`,
 		Description: `Top-level declarations of a file or package with line ranges, no bodies.
 
 Pass "target": an absolute .go path or a package import path, including the standard
-library and go.mod dependencies. Read this before opening a large file to decide which
-line range to read.`,
+library and go.mod dependencies. A file or directory outside any loaded package (a
+cloned repository, a downloaded file) is parsed on its own, syntax only. Read this
+before opening a large file to decide which line range to read.`,
 	}, h.outlineHandler)
 }

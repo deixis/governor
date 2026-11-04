@@ -2,6 +2,7 @@ package analysis
 
 import (
 	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -52,6 +53,53 @@ func TestOutline(t *testing.T) {
 
 	if _, err := ws.Outline(ctx, "example.com/nope"); err == nil {
 		t.Error("expected error for unknown package")
+	}
+}
+
+// A file or directory outside any loaded package is parsed on its own.
+func TestOutline_Standalone(t *testing.T) {
+	ws := NewWorkspace(copyFixture(t, "sample"))
+	ctx := context.Background()
+
+	loose := t.TempDir()
+	src := "package loose\n\nimport \"fmt\"\n\n// Greeter greets.\ntype Greeter struct{ Name string }\n\nfunc (g Greeter) Hello() string { return fmt.Sprint(g.Name) }\n\nfunc helper() {}\n"
+	if err := os.WriteFile(filepath.Join(loose, "a.go"), []byte(src), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(loose, "b.go"), []byte("package loose\n\nconst Version = \"1\"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	entries, err := ws.Outline(ctx, filepath.Join(loose, "a.go"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := FormatOutline(entries)
+	for _, want := range []string{
+		"Parsed without type information",
+		"type Greeter struct (1 fields)",
+		"func (g Greeter) Hello() string",
+		"func helper()",
+	} {
+		if !strings.Contains(text, want) {
+			t.Errorf("missing %q in:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, "Version") {
+		t.Errorf("sibling file leaked into single-file outline:\n%s", text)
+	}
+
+	entries, err = ws.Outline(ctx, loose)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text = FormatOutline(entries)
+	if !strings.Contains(text, "func helper()") || !strings.Contains(text, "const Version = \"1\"") {
+		t.Errorf("directory outline:\n%s", text)
+	}
+
+	if _, err := ws.Outline(ctx, filepath.Join(loose, "missing.go")); err == nil {
+		t.Error("expected error for missing file")
 	}
 }
 

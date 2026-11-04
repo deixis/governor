@@ -22,6 +22,7 @@ Governor exposes a type-checked view of the workspace as `gov_*` MCP tools. They
 | What does a dependency or stdlib package look like? | `gov_outline` or `gov_package_api` with its import path; `gov_definition` with `pkg.Symbol` |
 | Where is a library symbol used, before swapping the library? | `gov_symbol_references` with `pkg.Symbol`, from a file importing it |
 | How does a library use its own type, or what does a library function call? | `gov_symbol_references`, `gov_callers`, `gov_callees`, `gov_implementations` with `pkg.Symbol`; they look inside the library's package too |
+| What is in a file or directory of another repository? | `git clone --depth 1` it, then `gov_outline` on the file or directory. Syntax only, no `gh api` per file, no `rg '^func'` |
 
 Symbol forms: `Foo`, `T.Method`, `T.Field`, `pkg.Symbol`, `pkg.T.Method`. `pkg` is an import name in the given file.
 
