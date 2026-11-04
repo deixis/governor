@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"go/ast"
 	"go/types"
-	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
@@ -16,10 +15,8 @@ import (
 // the source package, what the source package needs from it.
 type moveAnalysis struct {
 	// pulled are unexported source-package declarations only the moved
-	// code uses; they travel with it. chain says which moved declaration
-	// needs each.
+	// code uses; they travel with it, a type with its methods.
 	pulled []decl
-	chain  map[types.Object]string
 	// shared are unexported source-package declarations the moved code
 	// uses and other code uses too, with the moved user and the other
 	// users.
@@ -31,7 +28,7 @@ type moveAnalysis struct {
 	// types that the moved code reaches into.
 	memberUses []string
 	// incoming are uses of the moved set from code staying in the source
-	// package.
+	// package, test files included.
 	incomingExported   []string
 	incomingUnexported []string
 	// forcedPulled are shared helpers pulled along by Force or a pull
@@ -56,11 +53,11 @@ func (s *snapshot) planMove(req Request) (*Report, error) {
 	if err != nil {
 		return nil, err
 	}
-	dest, destFile, err := s.resolveMoveTarget(req.Target, set)
+	target, err := s.resolveTarget(req.Target, snakeCase(set.decls[0].obj.Name())+".go")
 	if err != nil {
 		return nil, err
 	}
-	src := set.pkg
+	dest, src := target.pkg, set.pkg
 	if dest.PkgPath == src.PkgPath {
 		return nil, fmt.Errorf("%s is already in %s", req.Symbol, dest.PkgPath)
 	}
@@ -70,23 +67,37 @@ func (s *snapshot) planMove(req Request) (*Report, error) {
 			r.block(s.fileOf(d)+" is generated code", "change the generator instead")
 		}
 	}
+	destFile := relPath(s.root, target.file)
+	if !target.newFile {
+		if f := fileSyntax(dest, target.file); f != nil && isGenerated(f) {
+			r.block(destFile+" is generated code", "target another file of the package, or change the generator")
+		}
+	}
 	moved := len(set.decls)
 	fromFiles := s.setFiles(set)
 
 	ma := s.analyseMove(set, req.Decisions, req.Force)
-	if len(ma.forcedPulled) > 0 {
-		var lines []string
-		for _, obj := range ma.forcedOrder {
-			for _, pos := range ma.forcedPulled[obj] {
-				lines = append(lines, fmt.Sprintf("%s  uses %s, now in %s", pos, obj.Name(), dest.Name))
-			}
-		}
-		r.followUp("Fix the users of helpers pulled along", lines)
-	}
+	destNeedsSource := len(ma.exportedStays) > 0 || len(req.Decisions.Export) > 0
 
-	// Destination collisions, moved and pulled alike.
+	// Users left behind by a pulled helper. The agent chose to pull, so
+	// they are follow-ups; when importing the helper back would close a
+	// cycle, the title says so.
+	var leftBehind []string
+	for _, obj := range ma.forcedOrder {
+		for _, pos := range ma.forcedPulled[obj] {
+			leftBehind = append(leftBehind, fmt.Sprintf("%s  uses %s, now in %s", pos, obj.Name(), dest.Name))
+		}
+	}
+	title := "Fix the users of helpers pulled along"
+	if len(leftBehind) > 0 && (destNeedsSource || s.importsTransitively(dest, src.PkgPath)) {
+		title += fmt.Sprintf(", without importing %s from %s (cycle)", dest.Name, src.Name)
+	}
+	r.followUp(title, leftBehind)
+
+	// Destination collisions, moved and pulled alike: analyseMove added
+	// the pulled declarations to the set.
 	destScope := dest.Types.Scope()
-	for _, d := range append(slices.Clone(set.decls), ma.pulled...) {
+	for _, d := range set.decls {
 		if memberOwner(d.obj) != nil {
 			continue
 		}
@@ -120,51 +131,50 @@ func (s *snapshot) planMove(req Request) (*Report, error) {
 	}
 
 	// Import direction after the move, and cycles.
-	destNeedsSource := len(ma.exportedStays) > 0 || len(req.Decisions.Export) > 0
-	sourceNeedsDest := len(ma.incomingExported) > 0
-	if sourceNeedsDest {
-		users := ma.incomingExported
+	if len(ma.incomingExported) > 0 {
 		var why string
 		switch {
 		case destNeedsSource:
-			why = fmt.Sprintf("the moved code still uses %s from %s", strings.Join(objectNames(firstN2(ma.exportedStays, 3)), ", "), src.Name)
+			why = fmt.Sprintf("the moved code still uses %s from %s", strings.Join(objectNames(firstN(ma.exportedStays, 3)), ", "), src.Name)
 		case s.importsTransitively(dest, src.PkgPath):
 			why = fmt.Sprintf("%s already imports %s", dest.Name, src.Name)
 		}
 		if why != "" {
 			r.block(fmt.Sprintf("import cycle: %s uses the moved code at %s so %s would import %s, and %s",
-				src.Name, strings.Join(firstN(users, 3), ", "), src.Name, dest.Name, why),
+				src.Name, strings.Join(firstN(ma.incomingExported, 3), ", "), src.Name, dest.Name, why),
 				"move those users too, keep the moved code independent of "+src.Name+", or choose a destination that does not import "+src.Name)
 		}
 	} else if destNeedsSource && s.importsTransitively(src, dest.PkgPath) {
 		r.block(fmt.Sprintf("import cycle: %s imports %s, and the moved code uses %s from %s so %s would import it back",
-			src.Name, dest.Name, strings.Join(objectNames(firstN2(ma.exportedStays, 3)), ", "), src.Name, dest.Name),
+			src.Name, dest.Name, strings.Join(objectNames(firstN(ma.exportedStays, 3)), ", "), src.Name, dest.Name),
 			"move what the code uses too, or choose a destination "+src.Name+" does not import")
 	}
 
-	// Other packages.
-	uses := s.usesOutside(set)
+	// Other packages: they import the destination after the move, so none
+	// of them may sit on an import path from the destination.
+	uses, generated := s.usesOutside(set)
 	delete(uses, src.PkgPath)
 	paths := make([]string, 0, len(uses))
 	total := 0
-	var generated []string
 	for k, v := range uses {
 		paths = append(paths, k)
 		total += len(v)
-		for _, pos := range v {
-			if f := s.fileAt(pos); f != nil && isGenerated(f) {
-				generated = append(generated, pos)
-			}
-		}
 	}
 	sort.Strings(paths)
+	for _, p := range paths {
+		if p != dest.PkgPath && s.importsTransitively(dest, p) {
+			r.block(fmt.Sprintf("import cycle: %s uses the moved code at %s and %s imports it",
+				p, strings.Join(firstN(uses[p], 3), ", "), dest.Name),
+				"move those users too, or choose a destination that does not import "+p)
+		}
+	}
 	if len(generated) > 0 {
 		r.block("generated code references the moved symbol at "+strings.Join(firstN(generated, 3), ", "),
 			"regenerate after the move instead of editing those files")
 	}
 
 	// Summary.
-	parts := []string{fmt.Sprintf("moves %s from %s to %s", plural(moved, "declaration"), strings.Join(fromFiles, ", "), relPath(s.root, destFile))}
+	parts := []string{fmt.Sprintf("moves %s from %s to %s", plural(moved, "declaration"), strings.Join(fromFiles, ", "), destFile)}
 	if len(ma.pulled) > 0 {
 		names := make([]string, len(ma.pulled))
 		for i, d := range ma.pulled {
@@ -173,9 +183,9 @@ func (s *snapshot) planMove(req Request) (*Report, error) {
 		parts = append(parts, "pulls "+strings.Join(names, ", ")+" along")
 	}
 	if len(ma.exportedStays) > 0 {
-		parts = append(parts, fmt.Sprintf("keeps using %s from %s", strings.Join(objectNames(firstN2(ma.exportedStays, 3)), ", "), src.Name))
+		parts = append(parts, fmt.Sprintf("keeps using %s from %s", strings.Join(objectNames(firstN(ma.exportedStays, 3)), ", "), src.Name))
 	}
-	if sourceNeedsDest {
+	if len(ma.incomingExported) > 0 {
 		parts = append(parts, fmt.Sprintf("rewrites %s in %s to %s.X", plural(len(ma.incomingExported), "use"), src.Name, dest.Name))
 	}
 	if total > 0 {
@@ -193,7 +203,7 @@ func (s *snapshot) planMove(req Request) (*Report, error) {
 	}
 	if tn, ok := set.decls[0].obj.(*types.TypeName); ok {
 		var local []string
-		for _, l := range s.interfaceLinks(src, tn) {
+		for _, l := range s.interfaceLinks(tn) {
 			if strings.HasPrefix(l, src.Name+".") {
 				local = append(local, l)
 			}
@@ -207,46 +217,56 @@ func (s *snapshot) planMove(req Request) (*Report, error) {
 	return r, nil
 }
 
-// resolveMoveTarget accepts a package import path or an absolute file
-// path in a loaded package directory, returning the package and the file
-// that would receive the code.
-func (s *snapshot) resolveMoveTarget(target string, set *removalSet) (*packages.Package, string, error) {
-	if !filepath.IsAbs(target) {
-		p := s.packageByPath(target)
-		if p == nil {
-			return nil, "", fmt.Errorf("package %s not found in workspace", target)
-		}
-		return p, filepath.Join(p.Dir, snakeCase(set.decls[0].obj.Name())+".go"), nil
-	}
-	abs := canonical(target)
-	if pkgs := s.byFile[abs]; len(pkgs) > 0 {
-		return pkgs[0], abs, nil
-	}
-	dir := filepath.Dir(abs)
-	for _, p := range s.pkgs {
-		if p.ID == p.PkgPath && canonical(p.Dir) == dir {
-			return p, abs, nil
-		}
-	}
-	return nil, "", fmt.Errorf("directory %s holds no loaded package", dir)
-}
-
 // analyseMove computes the closure. Decisions move shared objects into
 // the pulled set (pull) or treat them as exported stays (export); force
 // pulls every undecided shared object.
 func (s *snapshot) analyseMove(set *removalSet, decisions Decisions, force bool) *moveAnalysis {
 	ma := &moveAnalysis{
-		chain:        make(map[types.Object]string),
 		shared:       make(map[types.Object]sharedUse),
 		forcedPulled: make(map[types.Object][]string),
 	}
 	src := set.pkg
 	scope := src.Types.Scope()
+	owners := fieldOwners(src.Types)
 	pull := toSet(decisions.Pull)
 	export := toSet(decisions.Export)
 
 	queue := slices.Clone(set.decls)
 	staySeen := make(map[types.Object]bool)
+	// depend settles one package-level object of src the moved code
+	// needs: it stays (exported, or exported by decision), travels
+	// (unexported and used by nothing else, or pulled by decision or
+	// force) or becomes a question.
+	depend := func(obj types.Object, by decl) {
+		if obj.Exported() || export[obj.Name()] {
+			if !staySeen[obj] {
+				staySeen[obj] = true
+				ma.exportedStays = append(ma.exportedStays, obj)
+			}
+			return
+		}
+		if _, asked := ma.shared[obj]; asked {
+			return
+		}
+		others := s.usersOutside(obj, set)
+		if len(others) == 0 || pull[obj.Name()] || force {
+			pd, ok := set.index[obj]
+			if !ok {
+				return
+			}
+			ma.pulled = append(ma.pulled, pd)
+			for _, d := range set.withMethods(pd) {
+				set.add(d)
+				queue = append(queue, d)
+			}
+			if len(others) > 0 {
+				ma.forcedPulled[obj] = others
+				ma.forcedOrder = append(ma.forcedOrder, obj)
+			}
+			return
+		}
+		ma.shared[obj] = sharedUse{by: qualifiedName(by.obj), others: others}
+	}
 	for len(queue) > 0 {
 		d := queue[0]
 		queue = queue[1:]
@@ -259,7 +279,12 @@ func (s *snapshot) analyseMove(set *removalSet, decisions Decisions, force bool)
 			if obj == nil || obj.Pkg() != src.Types || set.has(obj) {
 				return
 			}
-			if owner := memberOwner(obj); owner != nil {
+			if owner := ownerOf(owners, obj); owner != nil {
+				// Reaching into an unexported type of the package is a
+				// use of that type.
+				if !set.has(owner) && !owner.Exported() && owner.Parent() == scope {
+					depend(owner, d)
+				}
 				if !set.has(owner) && !obj.Exported() {
 					ma.memberUses = append(ma.memberUses, fmt.Sprintf("%s.%s at %s", owner.Name(), obj.Name(), s.position(s.root, id.Pos())))
 				}
@@ -268,74 +293,84 @@ func (s *snapshot) analyseMove(set *removalSet, decisions Decisions, force bool)
 			if obj.Parent() != scope {
 				return
 			}
-			if obj.Exported() || export[obj.Name()] {
-				if !staySeen[obj] {
-					staySeen[obj] = true
-					ma.exportedStays = append(ma.exportedStays, obj)
-				}
-				return
-			}
-			others := s.usersOutside(src, obj, set)
-			if len(others) == 0 || pull[obj.Name()] || force {
-				if pd, ok := set.index[obj]; ok {
-					ma.pulled = append(ma.pulled, pd)
-					ma.chain[obj] = qualifiedName(d.obj)
-					set.add(pd)
-					queue = append(queue, pd)
-					if len(others) > 0 {
-						ma.forcedPulled[obj] = others
-						ma.forcedOrder = append(ma.forcedOrder, obj)
-					}
-				}
-				return
-			}
-			if _, done := ma.shared[obj]; !done {
-				ma.shared[obj] = sharedUse{by: qualifiedName(d.obj), others: others}
-			}
+			depend(obj, d)
 		})
 	}
 	sort.Slice(ma.exportedStays, func(i, j int) bool { return ma.exportedStays[i].Name() < ma.exportedStays[j].Name() })
 
-	for id, obj := range src.TypesInfo.Uses {
-		if obj == nil || set.contains(id.Pos()) {
-			continue
-		}
-		target := obj
-		if owner := memberOwner(obj); owner != nil {
-			target = owner
-		}
-		if !set.has(target) {
-			continue
-		}
-		// Users of a helper pulled along by decision are reported as
-		// follow-ups, not as blockers.
-		if _, forced := ma.forcedPulled[target]; forced {
-			continue
-		}
-		pos := s.position(s.root, id.Pos())
-		if obj.Exported() {
-			ma.incomingExported = append(ma.incomingExported, pos)
-		} else {
-			ma.incomingUnexported = append(ma.incomingUnexported, fmt.Sprintf("%s at %s", qualifiedName(obj), pos))
+	// Uses of the moved set from the rest of the package, test files
+	// included. Variants type-check the package separately, so objects
+	// are matched by key, not identity.
+	setKeys := make(map[string]bool)
+	setNames := make(map[string]bool)
+	for _, d := range set.decls {
+		setKeys[objectKey(s.fset, d.obj)] = true
+		setNames[d.obj.Name()] = true
+	}
+	forcedKeys := make(map[string]bool)
+	for obj := range ma.forcedPulled {
+		forcedKeys[objectKey(s.fset, obj)] = true
+	}
+	for _, p := range s.variantsOf(src) {
+		owners := fieldOwners(p.Types)
+		for id, obj := range p.TypesInfo.Uses {
+			if obj == nil || obj.Pkg() != p.Types || set.contains(id.Pos()) {
+				continue
+			}
+			target := obj
+			if owner := ownerOf(owners, obj); owner != nil {
+				target = owner
+			}
+			if !setNames[target.Name()] {
+				continue
+			}
+			key := objectKey(s.fset, target)
+			// Users of a helper pulled along by decision are reported as
+			// follow-ups, not as blockers.
+			if !setKeys[key] || forcedKeys[key] {
+				continue
+			}
+			pos := s.position(s.root, id.Pos())
+			if obj.Exported() {
+				ma.incomingExported = append(ma.incomingExported, pos)
+			} else {
+				ma.incomingUnexported = append(ma.incomingUnexported, fmt.Sprintf("%s at %s", qualifiedName(obj), pos))
+			}
 		}
 	}
-	sort.Slice(ma.incomingExported, func(i, j int) bool { return lessPos(ma.incomingExported[i], ma.incomingExported[j]) })
-	ma.incomingExported = dedupe(ma.incomingExported)
+	ma.incomingExported = sortedPositions(ma.incomingExported)
 	sort.Strings(ma.incomingUnexported)
+	ma.incomingUnexported = slices.Compact(ma.incomingUnexported)
 	sort.Strings(ma.memberUses)
+	ma.memberUses = slices.Compact(ma.memberUses)
 	return ma
 }
 
-// usersOutside lists uses of obj in p from outside the set.
-func (s *snapshot) usersOutside(p *packages.Package, obj types.Object, set *removalSet) []string {
+// usersOutside lists the uses of obj in its package, test files included,
+// from outside the set and outside the methods of obj when it is a type:
+// those travel with it.
+func (s *snapshot) usersOutside(obj types.Object, set *removalSet) []string {
+	want := objectKey(s.fset, obj)
+	var own []span
+	if d, ok := set.index[obj]; ok {
+		for _, m := range set.withMethods(d)[1:] {
+			start, end := m.span()
+			own = append(own, span{start, end})
+		}
+	}
 	var out []string
-	for id, o := range p.TypesInfo.Uses {
-		if o == obj && !set.contains(id.Pos()) {
+	for _, p := range s.variantsOf(set.pkg) {
+		for id, o := range p.TypesInfo.Uses {
+			if o == nil || o.Name() != obj.Name() || objectKey(s.fset, o) != want {
+				continue
+			}
+			if set.contains(id.Pos()) || inSpans(own, id.Pos()) {
+				continue
+			}
 			out = append(out, s.position(s.root, id.Pos()))
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return lessPos(out[i], out[j]) })
-	return out
+	return sortedPositions(out)
 }
 
 // importsTransitively reports whether p imports path, directly or
@@ -379,23 +414,6 @@ func (s *snapshot) importAlias(path, srcPath string) string {
 	return ""
 }
 
-// fileAt returns the parsed file for a rendered position, or nil.
-func (s *snapshot) fileAt(pos string) *ast.File {
-	file, _, _ := parsePos(pos)
-	if file == "" {
-		return nil
-	}
-	if !filepath.IsAbs(file) {
-		file = filepath.Join(s.root, file)
-	}
-	file = canonical(file)
-	pkgs := s.byFile[file]
-	if len(pkgs) == 0 {
-		return nil
-	}
-	return fileSyntax(pkgs[0], file)
-}
-
 // exportedName capitalises the first letter.
 func exportedName(name string) string {
 	if name == "" {
@@ -410,13 +428,6 @@ func objectNames(objs []types.Object) []string {
 		out[i] = o.Name()
 	}
 	return out
-}
-
-func firstN2(in []types.Object, n int) []types.Object {
-	if len(in) <= n {
-		return in
-	}
-	return in[:n]
 }
 
 func toSet(names []string) map[string]bool {

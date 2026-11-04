@@ -49,6 +49,14 @@ type Widget struct{}
 
 // MakeWidget builds a Widget.
 func MakeWidget() Widget { return Widget{} }
+
+// Store is satisfied by *Thing.
+type Store interface {
+	Hello() string
+}
+
+// Pair shares one spec.
+var first, second = 1, 2
 `,
 		"foo/extra.go": `package foo
 
@@ -134,10 +142,11 @@ func TestPlanMove(t *testing.T) {
 		t.Errorf("OK report should be two lines, got %d:\n%s", n, text)
 	}
 
-	// Pull decision: OK, Other.N to fix afterwards.
+	// Pull decision: OK, Other.N to fix afterwards. Thing.Extra keeps
+	// using foo.Exported, so Other.N cannot import base back from baz.
 	r, text = plan(t, dir, Request{Op: "move", File: fooGo, Symbol: "Thing", Target: "example.com/m/baz", Decisions: Decisions{Pull: []string{"base"}}})
 	wantVerdict(t, r, text, VerdictOK)
-	wantAll(t, text, "pulls greet, base along", "After apply, you must:", "Fix the users of helpers pulled along (1)", "foo/foo.go:24:31  uses base, now in baz")
+	wantAll(t, text, "pulls greet, base along", "After apply, you must:", "Fix the users of helpers pulled along, without importing baz from foo (cycle) (1)", "foo/foo.go:24:31  uses base, now in baz")
 
 	// Force: same as pull, plus the forced marker.
 	r, text = plan(t, dir, Request{Op: "move", File: fooGo, Symbol: "Thing", Target: "example.com/m/baz", Force: true})
@@ -174,6 +183,86 @@ func TestPlanMove(t *testing.T) {
 	if _, err := ws.Plan(context.Background(), Request{Op: "move", File: fooGo, Symbol: "Thing", Target: "example.com/m/nope"}); err == nil {
 		t.Error("expected error for unknown destination")
 	}
+}
+
+// TestPlanMoveClosure covers the closure of a move: in-package test
+// files as users, a pulled type with methods, and a cycle through a
+// third package.
+func TestPlanMoveClosure(t *testing.T) {
+	dir := writeModule(t, map[string]string{
+		"go.mod": "module example.com/m\n\ngo 1.25\n",
+		"foo/foo.go": `package foo
+
+// Thing does things.
+type Thing struct{ Name string }
+
+// Hello greets.
+func (t *Thing) Hello() string { return greet(t.Name) }
+
+func greet(n string) string { return "hi " + n }
+
+type helper struct{ n int }
+
+func (h helper) do() int { return h.n }
+
+// Big uses helper.
+type Big struct{}
+
+// Run runs.
+func (Big) Run() int { return helper{n: 1}.do() }
+`,
+		"foo/foo_test.go": `package foo
+
+import "testing"
+
+func TestGreet(t *testing.T) { _ = greet("x") }
+`,
+		"bar/bar.go": `package bar
+
+import "example.com/m/qux"
+
+// Use depends on qux.
+func Use() string { return qux.Hi() }
+`,
+		"baz/baz.go": "package baz\n",
+		"qux/qux.go": `package qux
+
+import "example.com/m/foo"
+
+// T is a Thing.
+var T foo.Thing
+
+// Hi greets.
+func Hi() string { return T.Hello() }
+`,
+	})
+	fooGo := filepath.Join(dir, "foo", "foo.go")
+
+	// greet is used by an in-package test file: a decision, not a pull.
+	r, text := plan(t, dir, Request{Op: "move", File: fooGo, Symbol: "Thing", Target: "example.com/m/baz"})
+	wantVerdict(t, r, text, VerdictDecisions)
+	wantAll(t, text, "func greet (foo/foo.go:9:6) is unexported, used by Thing.Hello and by foo/foo_test.go:5:36 staying in foo")
+
+	// Nor is it an orphan on removal.
+	r, text = plan(t, dir, Request{Op: "remove", File: fooGo, Symbol: "Thing"})
+	wantVerdict(t, r, text, VerdictOK)
+	if strings.Contains(text, "greet") {
+		t.Errorf("greet is used by foo_test.go:\n%s", text)
+	}
+
+	// A pulled type brings its methods; its own methods are not other
+	// users, and reaching into its fields is not a blocker.
+	r, text = plan(t, dir, Request{Op: "move", File: fooGo, Symbol: "Big", Target: "example.com/m/baz"})
+	wantVerdict(t, r, text, VerdictOK)
+	wantAll(t, text, "moves 2 declarations from foo/foo.go to baz/big.go; pulls helper along")
+	if n := strings.Count(text, "\n"); n != 2 {
+		t.Errorf("OK report should be two lines, got %d:\n%s", n, text)
+	}
+
+	// qux uses Thing and bar imports qux: Thing cannot move into bar.
+	r, text = plan(t, dir, Request{Op: "move", File: fooGo, Symbol: "Thing", Target: "example.com/m/bar", Decisions: Decisions{Export: []string{"greet"}}})
+	wantVerdict(t, r, text, VerdictBlocked)
+	wantAll(t, text, "import cycle: example.com/m/qux uses the moved code at qux/qux.go:6:11, qux/qux.go:9:29 and bar imports it", "Fix: move those users too")
 }
 
 func TestPlanRemove(t *testing.T) {
@@ -246,6 +335,27 @@ func TestPlanReplace(t *testing.T) {
 	wantVerdict(t, r, text, VerdictOK)
 	wantAll(t, text, "shape changes: ", "removed count", "added Label", "Check the packages using it", "example.com/m/qux (2 uses)")
 
+	// An interface is a type to the source: same kind.
+	r, text = plan(t, dir, Request{Op: "replace", File: fooGo, Symbol: "Store", Source: "type Store interface {\n\tHello() string\n\tCount() int\n}"})
+	wantVerdict(t, r, text, VerdictOK)
+	wantAll(t, text, "replaces interface Store at", "shape changes: added Count")
+
+	// A receiver change is a signature change; renaming a parameter or
+	// reflowing the declaration is not.
+	r, text = plan(t, dir, Request{Op: "replace", File: fooGo, Symbol: "Thing.Hello", Source: "func (t Thing) Hello() string { return \"hi\" }"})
+	wantVerdict(t, r, text, VerdictOK)
+	wantAll(t, text, "signature changes from func (t *Thing) Hello() string to func (t Thing) Hello() string", "Update the callers (1)")
+	r, text = plan(t, dir, Request{Op: "replace", File: fooGo, Symbol: "Thing.Hello", Source: "func (th *Thing) Hello(\n) string {\n\treturn \"hi\"\n}"})
+	wantVerdict(t, r, text, VerdictOK)
+	if strings.Contains(text, "signature changes") {
+		t.Errorf("parameter names and layout are not the signature:\n%s", text)
+	}
+
+	// One name of a multi-name spec cannot be replaced alone.
+	r, text = plan(t, dir, Request{Op: "replace", File: fooGo, Symbol: "first", Source: "var first = 3"})
+	wantVerdict(t, r, text, VerdictBlocked)
+	wantAll(t, text, "first shares its spec with second", "Fix: split the spec")
+
 	if _, err := NewWorkspace(dir).Plan(context.Background(), Request{Op: "replace", File: fooGo, Symbol: "Thing", Source: "func A() {}\nfunc B() {}"}); err == nil {
 		t.Error("expected error for two declarations")
 	}
@@ -273,6 +383,14 @@ func TestPlanAdd(t *testing.T) {
 	r, text = plan(t, dir, Request{Op: "add", Target: filepath.Join(dir, "baz", "more.go"), Source: "const Answer = 42"})
 	wantVerdict(t, r, text, VerdictOK)
 	wantAll(t, text, "baz/more.go (new file) in package example.com/m/baz")
+
+	// A package target whose derived file name exists adds to that file.
+	r, text = plan(t, dir, Request{Op: "add", Target: "example.com/m/foo", Source: "func Extra() {}"})
+	wantVerdict(t, r, text, VerdictOK)
+	wantAll(t, text, "adds func Extra to foo/extra.go in package example.com/m/foo")
+	if strings.Contains(text, "new file") {
+		t.Errorf("foo/extra.go exists:\n%s", text)
+	}
 
 	if _, err := NewWorkspace(dir).Plan(context.Background(), Request{Op: "add", Target: "example.com/m/nope", Source: "const A = 1"}); err == nil {
 		t.Error("expected error for unknown package")

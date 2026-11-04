@@ -5,6 +5,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"slices"
 	"sort"
 	"strings"
 
@@ -22,13 +23,17 @@ type removalSet struct {
 
 type span struct{ start, end token.Pos }
 
-func (set *removalSet) contains(pos token.Pos) bool {
-	for _, sp := range set.spans {
+func inSpans(spans []span, pos token.Pos) bool {
+	for _, sp := range spans {
 		if pos >= sp.start && pos < sp.end {
 			return true
 		}
 	}
 	return false
+}
+
+func (set *removalSet) contains(pos token.Pos) bool {
+	return inSpans(set.spans, pos)
 }
 
 func (set *removalSet) has(obj types.Object) bool {
@@ -47,6 +52,16 @@ func (set *removalSet) add(d decl) {
 	set.decls = append(set.decls, d)
 	start, end := d.span()
 	set.spans = append(set.spans, span{start, end})
+}
+
+// withMethods returns d followed by, for a type, its methods from the
+// index: a type never leaves its methods behind.
+func (set *removalSet) withMethods(d decl) []decl {
+	out := []decl{d}
+	if tn, ok := d.obj.(*types.TypeName); ok {
+		out = append(out, methodsOf(set.index, tn)...)
+	}
+	return out
 }
 
 // files lists the workspace-relative files the set touches.
@@ -92,18 +107,16 @@ func (s *snapshot) removalSetFor(file, symbol string) (*removalSet, error) {
 		return nil, fmt.Errorf("%s is not a top-level declaration (a field, parameter or local)", symbol)
 	}
 	set := &removalSet{pkg: p, index: index}
-	set.add(d)
-	if tn, ok := obj.(*types.TypeName); ok {
-		for _, m := range methodsOf(index, tn) {
-			set.add(m)
-		}
+	for _, d := range set.withMethods(d) {
+		set.add(d)
 	}
 	return set, nil
 }
 
 // usesOutside lists every use of the set's objects, methods and fields
 // included, from positions outside the set, grouped by package path.
-func (s *snapshot) usesOutside(set *removalSet) map[string][]string {
+// generated lists the uses that sit in generated files.
+func (s *snapshot) usesOutside(set *removalSet) (byPkg map[string][]string, generated []string) {
 	targets := make(map[string]bool)
 	for _, d := range set.decls {
 		targets[objectKey(s.fset, d.obj)] = true
@@ -115,7 +128,8 @@ func (s *snapshot) usesOutside(set *removalSet) map[string][]string {
 			}
 		}
 	}
-	out := make(map[string][]string)
+	byPkg = make(map[string][]string)
+	generatedFiles := make(map[*ast.File]bool)
 	for _, p := range s.pkgs {
 		if p.TypesInfo == nil || isTestMain(p) {
 			continue
@@ -127,24 +141,31 @@ func (s *snapshot) usesOutside(set *removalSet) map[string][]string {
 			if p.PkgPath == set.pkg.PkgPath && set.contains(id.Pos()) {
 				continue
 			}
-			out[p.PkgPath] = append(out[p.PkgPath], s.position(s.root, id.Pos()))
+			pos := s.position(s.root, id.Pos())
+			byPkg[p.PkgPath] = append(byPkg[p.PkgPath], pos)
+			if f := s.syntaxAt(p, id.Pos()); f != nil {
+				gen, known := generatedFiles[f]
+				if !known {
+					gen = isGenerated(f)
+					generatedFiles[f] = gen
+				}
+				if gen {
+					generated = append(generated, pos)
+				}
+			}
 		}
 	}
-	for k := range out {
-		sort.Slice(out[k], func(i, j int) bool { return lessPos(out[k][i], out[k][j]) })
-		out[k] = dedupe(out[k])
+	for k := range byPkg {
+		byPkg[k] = sortedPositions(byPkg[k])
 	}
-	return out
+	return byPkg, sortedPositions(generated)
 }
 
-func dedupe(in []string) []string {
-	out := in[:0]
-	for i, v := range in {
-		if i == 0 || v != in[i-1] {
-			out = append(out, v)
-		}
-	}
-	return out
+// sortedPositions orders rendered positions and drops duplicates: a file
+// compiled into two package variants reports each use twice.
+func sortedPositions(in []string) []string {
+	sort.Slice(in, func(i, j int) bool { return lessPos(in[i], in[j]) })
+	return slices.Compact(in)
 }
 
 // inspectSpan walks the nodes of d's file inside d's span.
@@ -181,14 +202,7 @@ func (s *snapshot) orphans(set *removalSet) []string {
 		if _, inSet := set.index[obj]; !inSet || set.has(obj) || obj.Exported() {
 			continue
 		}
-		usedElsewhere := false
-		for id, o := range set.pkg.TypesInfo.Uses {
-			if o == obj && !set.contains(id.Pos()) {
-				usedElsewhere = true
-				break
-			}
-		}
-		if !usedElsewhere {
+		if len(s.usersOutside(obj, set)) == 0 {
 			out = append(out, fmt.Sprintf("%s %s  %s", objectKind(obj), obj.Name(), s.position(s.root, obj.Pos())))
 		}
 	}
@@ -213,7 +227,7 @@ func (s *snapshot) planRemove(req Request) (*Report, error) {
 
 	summary := fmt.Sprintf("removes %s from %s", plural(len(set.decls), "declaration"), strings.Join(s.setFiles(set), ", "))
 
-	uses := s.usesOutside(set)
+	uses, _ := s.usesOutside(set)
 	if len(uses) > 0 {
 		paths := make([]string, 0, len(uses))
 		total := 0
@@ -232,7 +246,7 @@ func (s *snapshot) planRemove(req Request) (*Report, error) {
 		r.followUp("Fix or remove the uses that break", lines)
 	}
 	if tn, ok := set.decls[0].obj.(*types.TypeName); ok {
-		if links := s.interfaceLinks(set.pkg, tn); len(links) > 0 {
+		if links := s.interfaceLinks(tn); len(links) > 0 {
 			summary += "; drops " + plural(len(links), "interface relation") + " (" + strings.Join(firstN(links, 3), ", ") + ")"
 		}
 	}
@@ -246,7 +260,7 @@ func (s *snapshot) planRemove(req Request) (*Report, error) {
 
 // interfaceLinks lists workspace interfaces tn satisfies, and for an
 // interface tn the workspace types satisfying it, as pkg.Name.
-func (s *snapshot) interfaceLinks(home *packages.Package, tn *types.TypeName) []string {
+func (s *snapshot) interfaceLinks(tn *types.TypeName) []string {
 	var out []string
 	queryType := tn.Type()
 	_, queryIsIface := queryType.Underlying().(*types.Interface)
@@ -275,11 +289,4 @@ func (s *snapshot) interfaceLinks(home *packages.Package, tn *types.TypeName) []
 	}
 	sort.Strings(out)
 	return out
-}
-
-func firstN(in []string, n int) []string {
-	if len(in) <= n {
-		return in
-	}
-	return in[:n]
 }
