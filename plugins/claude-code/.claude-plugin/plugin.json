@@ -13,22 +13,12 @@
     "golang",
     "mcp",
     "code-intelligence",
-    "lsp",
-    "references",
-    "callers",
     "refactor",
-    "move",
     "test",
     "lint",
     "golangci-lint",
     "staticcheck",
-    "vet",
     "gofumpt",
-    "goimports",
-    "modernize",
-    "hooks",
-    "autofix",
-    "audit",
-    "vulncheck"
+    "modernize"
   ]
 }
