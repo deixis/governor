@@ -67,3 +67,34 @@ func TestCallees(t *testing.T) {
 		t.Error("expected error for interface method")
 	}
 }
+
+// Standard library functions: callers inside their own package, callees
+// from their body.
+func TestCallgraph_External(t *testing.T) {
+	dir := copyFixture(t, "sample")
+	ws := NewWorkspace(dir)
+	ctx := context.Background()
+	serverGo := filepath.Join(dir, "server.go")
+
+	calls, err := ws.Callers(ctx, serverGo, "fmt.Fprintf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fromPrintf bool
+	for _, c := range calls {
+		if c.Package == "fmt" && c.Caller == "Printf" {
+			fromPrintf = true
+		}
+	}
+	if !fromPrintf {
+		t.Errorf("Printf not among Fprintf callers:\n%s", FormatCallers("fmt.Fprintf", calls))
+	}
+
+	calls, err = ws.Callees(ctx, serverGo, "fmt.Printf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(calls) != 1 || calls[0].Callee != "Fprintf" || calls[0].Package != "fmt" {
+		t.Errorf("Printf callees = %+v", calls)
+	}
+}

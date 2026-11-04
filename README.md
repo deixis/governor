@@ -150,7 +150,7 @@ The working directory is set to the workspace root automatically.
 
 ### Code intelligence
 
-Backed by an in-process, cached `go/packages` load of the workspace. The first call after a source change reloads; later calls hit the cache. `gov_outline`, `gov_package_api` and `gov_definition` also reach the standard library and go.mod dependencies: a package outside the workspace is loaded with source on first use and cached with the snapshot.
+Backed by an in-process, cached `go/packages` load of the workspace. The first call after a source change reloads; later calls hit the cache. `gov_outline`, `gov_package_api` and `gov_definition` also reach the standard library and go.mod dependencies: a package outside the workspace is loaded with source on first use and cached with the snapshot. `gov_symbol_references`, `gov_callers`, `gov_callees` and `gov_implementations` on a symbol from such a package search inside that package as well.
 
 | Tool | Description |
 |---|---|

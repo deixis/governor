@@ -192,6 +192,28 @@ func (s *snapshot) externalPackage(ctx context.Context, importPath string) (*pac
 	return pkg, err
 }
 
+// scanPackages returns the packages to search for uses of obj: every
+// workspace package plus, when obj is declared outside the workspace, its
+// own package loaded on demand. Package-level symbols and methods match
+// across the export-data/source boundary by name; a load failure leaves
+// only the workspace packages.
+func (s *snapshot) scanPackages(ctx context.Context, obj types.Object) []*packages.Package {
+	if obj == nil || obj.Pkg() == nil {
+		return s.pkgs
+	}
+	path := obj.Pkg().Path()
+	for _, p := range s.pkgs {
+		if p.PkgPath == path {
+			return s.pkgs
+		}
+	}
+	ext, err := s.externalPackage(ctx, path)
+	if err != nil {
+		return s.pkgs
+	}
+	return append(append([]*packages.Package(nil), s.pkgs...), ext)
+}
+
 // loadExternal loads one package by exact import path. Patterns are
 // rejected up front: `...`, `all`, `std` or `cmd` would parse and
 // type-check hundreds of packages before the single-package check fails.

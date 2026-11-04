@@ -21,7 +21,9 @@ type Reference struct {
 
 // References finds every use of symbol across the workspace. The symbol is
 // resolved in the scope of file and may be Foo, T.Method, T.Field, or
-// pkg.Symbol where pkg is an import name in that file.
+// pkg.Symbol where pkg is an import name in that file. A symbol declared
+// in a dependency or the standard library is also searched within its
+// own package.
 func (w *Workspace) References(ctx context.Context, file, symbol string) ([]Reference, error) {
 	snap, target, err := w.resolve(ctx, file, symbol)
 	if err != nil {
@@ -46,7 +48,7 @@ func (w *Workspace) References(ctx context.Context, file, symbol string) ([]Refe
 		refs = append(refs, Reference{Position: pos, Package: p.PkgPath, Definition: def})
 	}
 
-	for _, p := range snap.pkgs {
+	for _, p := range snap.scanPackages(ctx, target) {
 		if p.TypesInfo == nil || isTestMain(p) {
 			continue
 		}

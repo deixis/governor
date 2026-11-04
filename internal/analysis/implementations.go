@@ -27,7 +27,9 @@ type Implementation struct {
 //   - interface method: methods on satisfying types with that name
 //   - concrete method: interface methods it implements
 //
-// The empty interface and interfaces with no methods are skipped.
+// The empty interface and interfaces with no methods are skipped. A
+// symbol declared in a dependency or the standard library is also
+// matched against the types of its own package.
 func (w *Workspace) Implementations(ctx context.Context, file, symbol string) ([]Implementation, error) {
 	snap, obj, err := w.resolve(ctx, file, symbol)
 	if err != nil {
@@ -77,7 +79,7 @@ func (w *Workspace) Implementations(ctx context.Context, file, symbol string) ([
 
 	seen := make(map[string]bool)
 	var out []Implementation
-	for _, p := range snap.pkgs {
+	for _, p := range snap.scanPackages(ctx, tn) {
 		if p.Types == nil || isTestMain(p) {
 			continue
 		}

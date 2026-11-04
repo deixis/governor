@@ -53,3 +53,29 @@ func TestReferences(t *testing.T) {
 		t.Error("expected error for unknown member")
 	}
 }
+
+// A standard library symbol is searched in the workspace and inside its
+// own package.
+func TestReferences_External(t *testing.T) {
+	dir := copyFixture(t, "sample")
+	ws := NewWorkspace(dir)
+	refs, err := ws.References(context.Background(), filepath.Join(dir, "server.go"), "fmt.Sprintf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workspace, external int
+	for _, r := range refs {
+		switch r.Package {
+		case "example.com/sample":
+			workspace++
+		case "fmt":
+			external++
+			if !strings.Contains(r.Position, "print.go") {
+				t.Errorf("fmt reference at %q", r.Position)
+			}
+		}
+	}
+	if workspace == 0 || external == 0 {
+		t.Errorf("workspace=%d external=%d in:\n%s", workspace, external, FormatReferences("fmt.Sprintf", refs))
+	}
+}

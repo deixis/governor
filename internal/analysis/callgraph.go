@@ -27,8 +27,10 @@ type Call struct {
 }
 
 // Callers returns every static call site of the function or method
-// symbol across the workspace. Calls through interfaces resolve to the
-// interface method, so a concrete method only lists direct calls.
+// symbol across the workspace, plus those inside its own package when it
+// is declared in a dependency or the standard library. Calls through
+// interfaces resolve to the interface method, so a concrete method only
+// lists direct calls.
 func (w *Workspace) Callers(ctx context.Context, file, symbol string) ([]Call, error) {
 	snap, obj, err := w.resolve(ctx, file, symbol)
 	if err != nil {
@@ -43,7 +45,7 @@ func (w *Workspace) Callers(ctx context.Context, file, symbol string) ([]Call, e
 
 	seen := make(map[string]bool)
 	var out []Call
-	for _, p := range snap.pkgs {
+	for _, p := range snap.scanPackages(ctx, fn) {
 		if p.TypesInfo == nil || isTestMain(p) {
 			continue
 		}
@@ -83,26 +85,21 @@ func (w *Workspace) Callees(ctx context.Context, file, symbol string) ([]Call, e
 	}
 	root := snap.root
 
-	// Locate the declaration.
-	filename := snap.fset.Position(fn.Pos()).Filename
-	pkgs := snap.byFile[filename]
-	if len(pkgs) == 0 {
-		return nil, fmt.Errorf("%s is declared outside the workspace", symbol)
-	}
-	p := pkgs[0]
-	syntax := fileSyntax(p, filename)
+	// Locate the declaration, loading its package when it lives in a
+	// dependency or the standard library.
+	p, syntax, pos := snap.declFile(ctx, fn)
 	if syntax == nil {
-		return nil, fmt.Errorf("no syntax for %s", filename)
+		return nil, fmt.Errorf("%s has no source available", symbol)
 	}
 	var decl *ast.FuncDecl
 	for _, d := range syntax.Decls {
-		if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Pos() == fn.Pos() {
+		if fd, ok := d.(*ast.FuncDecl); ok && fd.Name.Pos() == pos {
 			decl = fd
 			break
 		}
 	}
 	if decl == nil {
-		return nil, fmt.Errorf("%s has no declaration in %s (interface method?)", symbol, filename)
+		return nil, fmt.Errorf("%s has no declaration in %s (interface method?)", symbol, snap.position(root, pos))
 	}
 	if decl.Body == nil {
 		return nil, nil
