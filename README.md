@@ -72,6 +72,8 @@ Governor provides the following commands:
 ```
 governor check [flags] [packages...]
 governor audit [flags] [packages...]
+governor fix   [flags] [files...]
+governor hook  bash [command...]
 governor mcp   [flags]
 governor version
 ```
@@ -109,6 +111,22 @@ governor audit -json ./...
 | `-json` | off | Output the full RunResult as JSON |
 | `-v` | off | Verbose output |
 | `-timeout` | config | Override per-step timeout |
+
+### governor hook
+
+Agent harness hook for shell commands. `governor hook bash` reads a Claude Code PreToolUse event on stdin and prints the decision as JSON:
+
+| Command | Becomes |
+|---|---|
+| `go test [flags] pkgs`, `go vet pkgs`, `staticcheck pkgs`, `go tool staticcheck pkgs`, `golangci-lint run pkgs` | `governor check pkgs` (`--fix` keeps `-fix`, `-timeout` and `-v` pass through) |
+| `goimports -w`, `gofmt -w`, `gofumpt -w` on Go files | `governor fix files` |
+| `sed -i`, `perl -i`, `sd`, `awk -i inplace` on a Go file | refused, with a pointer to the editor tool and `gov_diagnostics` |
+
+Targeted test runs (`-run`, `-bench`, `-fuzz`, profiles, `-json`) and read-only formatter modes (`-l`, `-d`) run as is. Every command in a pipeline, `&&` chain, loop or substitution is inspected. Pass a command as arguments to see what would happen:
+
+```bash
+governor hook bash go test -race ./internal/...
+```
 
 ### governor mcp
 
@@ -177,7 +195,7 @@ echo path/to/edited.go | governor fix -q -stdin
 
 ### Claude Code plugin
 
-`plugins/claude-code` packages the integration for Claude Code: it registers the MCP server, ships a skill describing when to use each `gov_*` tool, and adds a `PostToolUse` hook that runs `governor fix -q` on every edited `.go` file. Install the binary first, then the plugin:
+`plugins/claude-code` packages the integration for Claude Code: it registers the MCP server, ships a skill describing when to use each `gov_*` tool, adds a `PostToolUse` hook that runs `governor fix -q` on every edited `.go` file, and a `PreToolUse` hook on Bash that runs `governor hook bash`: `go test`, `go vet`, `golangci-lint`, `staticcheck` and `goimports -w` are rewritten to `governor check` or `governor fix` with a note to the agent, and `sed`, `perl`, `sd` or `awk` editing a Go file in place are refused. Install the binary first, then the plugin:
 
 ```bash
 go install github.com/deixis/governor/cmd/governor@latest

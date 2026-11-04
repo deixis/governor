@@ -77,7 +77,8 @@ The editing workflow is iterative. Cycle through these steps until the task is c
 - Prefer Governor's intelligence tools over grep, find and reading whole files. They see types; text search does not.
 - `gov_outline` before reading a file. `gov_definition` before opening a declaration. `gov_implementations` before assuming a concrete type.
 - Dependencies and the standard library go through the same tools. No `go doc`, no grepping the module cache.
-- `gov_fix` after every edit. `gov_check` before declaring work done.
+- `gov_fix` after every edit. `gov_check` before declaring work done. Do NOT run `go test`, `go vet`, `golangci-lint`, `staticcheck` or `goimports` directly; test flags such as `-race` belong in `.governor.yaml`.
+- Never edit a Go file with `sed`, `perl`, `sd` or `awk`. Use the editor tool, or ast-grep for a repeated pattern. To migrate a type or signature: change the definition, `gov_fix` its file, then `gov_diagnostics` with no arguments lists every site that must change.
 - Use `gov_inspect` instead of re-running commands.
 - Do NOT ignore test or lint failures unless the user explicitly instructs you to.
 - Missing external tools are reported as `unavailable` with install instructions.
