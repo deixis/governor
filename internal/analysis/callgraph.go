@@ -41,14 +41,15 @@ func (w *Workspace) Callers(ctx context.Context, file, symbol string) ([]Call, e
 		return nil, fmt.Errorf("%s is a %s, expected a function or method", symbol, objectKind(obj))
 	}
 	root := snap.root
-	want := objectKey(snap.fset, fn)
 
 	seen := make(map[string]bool)
 	var out []Call
-	for _, p := range snap.scanPackages(ctx, fn) {
+	for _, t := range snap.scanPackages(ctx, fn) {
+		p := t.pkg
 		if p.TypesInfo == nil || isTestMain(p) {
 			continue
 		}
+		want := objectKey(snap.fset, t.obj)
 		for _, f := range p.Syntax {
 			walkCalls(f, func(call *ast.CallExpr, callee types.Object, enclosing string) {
 				if callee == nil || callee.Name() != fn.Name() || objectKey(snap.fset, callee) != want {

@@ -73,16 +73,17 @@ func (w *Workspace) Implementations(ctx context.Context, file, symbol string) ([
 	if !ok {
 		return nil, fmt.Errorf("%s is a %s, expected a type or method", symbol, objectKind(obj))
 	}
-	queryType := tn.Type()
-	queryKey := objectKey(snap.fset, tn)
-	_, queryIsIface := queryType.Underlying().(*types.Interface)
-
 	seen := make(map[string]bool)
 	var out []Implementation
-	for _, p := range snap.scanPackages(ctx, tn) {
-		if p.Types == nil || isTestMain(p) {
+	for _, t := range snap.scanPackages(ctx, tn) {
+		p := t.pkg
+		query, ok := t.obj.(*types.TypeName)
+		if !ok || p.Types == nil || isTestMain(p) {
 			continue
 		}
+		queryType := query.Type()
+		queryKey := objectKey(snap.fset, query)
+		_, queryIsIface := queryType.Underlying().(*types.Interface)
 		scope := p.Types.Scope()
 		for _, name := range scope.Names() {
 			cand, ok := scope.Lookup(name).(*types.TypeName)

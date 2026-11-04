@@ -192,26 +192,86 @@ func (s *snapshot) externalPackage(ctx context.Context, importPath string) (*pac
 	return pkg, err
 }
 
+// scanTarget is one package to search and the query object as that
+// package's type checker sees it.
+type scanTarget struct {
+	pkg *packages.Package
+	obj types.Object
+}
+
 // scanPackages returns the packages to search for uses of obj: every
 // workspace package plus, when obj is declared outside the workspace, its
-// own package loaded on demand. Package-level symbols and methods match
-// across the export-data/source boundary by name; a load failure leaves
-// only the workspace packages.
-func (s *snapshot) scanPackages(ctx context.Context, obj types.Object) []*packages.Package {
+// own package loaded on demand. That package is type-checked from source,
+// so its objects, positions and named types are distinct from the
+// export-data obj the workspace sees; the query is resolved again there
+// by name so keys and type identity line up. A load or lookup failure
+// leaves only the workspace packages.
+func (s *snapshot) scanPackages(ctx context.Context, obj types.Object) []scanTarget {
+	out := make([]scanTarget, 0, len(s.pkgs)+1)
+	for _, p := range s.pkgs {
+		out = append(out, scanTarget{p, obj})
+	}
 	if obj == nil || obj.Pkg() == nil {
-		return s.pkgs
+		return out
 	}
 	path := obj.Pkg().Path()
 	for _, p := range s.pkgs {
 		if p.PkgPath == path {
-			return s.pkgs
+			return out
 		}
 	}
 	ext, err := s.externalPackage(ctx, path)
 	if err != nil {
-		return s.pkgs
+		return out
 	}
-	return append(append([]*packages.Package(nil), s.pkgs...), ext)
+	if local := sameObject(ext.Types, obj); local != nil {
+		out = append(out, scanTarget{ext, local})
+	}
+	return out
+}
+
+// sameObject finds obj's counterpart in pkg, another type-checked
+// instance of obj's own package: package-level objects and methods by
+// name, struct fields through the named type declaring them. nil when
+// there is none.
+func sameObject(pkg *types.Package, obj types.Object) types.Object {
+	if fn, ok := obj.(*types.Func); ok {
+		if recv := fn.Type().(*types.Signature).Recv(); recv != nil {
+			return memberOf(pkg, recvTypeName(recv.Type()), fn.Name())
+		}
+	}
+	if v, ok := obj.(*types.Var); ok && v.IsField() {
+		orig := obj.Pkg().Scope()
+		for _, name := range orig.Names() {
+			tn, ok := orig.Lookup(name).(*types.TypeName)
+			if !ok {
+				continue
+			}
+			st, ok := tn.Type().Underlying().(*types.Struct)
+			if !ok {
+				continue
+			}
+			for i := 0; i < st.NumFields(); i++ {
+				if st.Field(i) == v {
+					return memberOf(pkg, name, v.Name())
+				}
+			}
+		}
+		return nil
+	}
+	if obj.Parent() == obj.Pkg().Scope() {
+		return pkg.Scope().Lookup(obj.Name())
+	}
+	return nil
+}
+
+// memberOf looks up member on the package-level type typeName of pkg.
+func memberOf(pkg *types.Package, typeName, member string) types.Object {
+	tn, ok := pkg.Scope().Lookup(typeName).(*types.TypeName)
+	if !ok {
+		return nil
+	}
+	return lookupMember(tn.Type(), pkg, member)
 }
 
 // loadExternal loads one package by exact import path. Patterns are
