@@ -163,7 +163,7 @@ Backed by an in-process, cached `go/packages` load of the workspace. The first c
 | `gov_implementations` | Interface satisfaction, both directions, type or method level |
 | `gov_callers` | Static call sites of a function with their enclosing function |
 | `gov_callees` | Calls made inside a function body |
-| `gov_outline` | Top-level declarations of a file or package with line ranges, workspace or dependency |
+| `gov_outline` | Top-level declarations of a file, directory or package with line ranges; workspace, dependency, or any Go file on disk (syntax only) |
 | `gov_fix` | Repair imports, gofumpt, modernize rewrites, then diagnostics for the files |
 
 ### Fix on every edit

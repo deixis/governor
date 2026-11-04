@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"go/ast"
+	"go/parser"
 	"go/printer"
 	"go/token"
+	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -21,13 +23,17 @@ type OutlineEntry struct {
 	// Summary is a one-line rendering: the signature for functions, the
 	// name plus a shape hint for types, names plus type for values.
 	Summary string
+	// Standalone marks a file parsed on its own because it belongs to no
+	// loaded package: syntax only, no type information behind it.
+	Standalone bool
 }
 
 // Outline lists the top-level declarations of a file (absolute path) or
 // a package (import path), with line ranges and one-line summaries.
 // Bodies are never included. Test files are included for workspace
 // packages. An import path outside the workspace (standard library,
-// dependency) is loaded on demand without tests.
+// dependency) is loaded on demand without tests. A .go file or a
+// directory outside any loaded package is parsed on its own.
 func (w *Workspace) Outline(ctx context.Context, target string) ([]OutlineEntry, error) {
 	snap, err := w.load(ctx)
 	if err != nil {
@@ -36,17 +42,25 @@ func (w *Workspace) Outline(ctx context.Context, target string) ([]OutlineEntry,
 	root := snap.root
 
 	var files []*ast.File
+	fset := snap.fset
+	standalone := false
 	if strings.HasSuffix(target, ".go") || filepath.IsAbs(target) {
 		pkgs, err := snap.packagesForFile(target)
-		if err != nil {
-			return nil, err
+		if err == nil {
+			// The test variant (if any) parses the same file; one copy suffices.
+			f := fileSyntax(pkgs[0], target)
+			if f == nil {
+				return nil, fmt.Errorf("no syntax tree for %s", target)
+			}
+			files = append(files, f)
+		} else {
+			fset = token.NewFileSet()
+			files, err = parseStandalone(fset, target)
+			if err != nil {
+				return nil, err
+			}
+			standalone = true
 		}
-		// The test variant (if any) parses the same file; one copy suffices.
-		f := fileSyntax(pkgs[0], target)
-		if f == nil {
-			return nil, fmt.Errorf("no syntax tree for %s", target)
-		}
-		files = append(files, f)
 	} else {
 		seen := make(map[string]bool)
 		for _, p := range snap.pkgs {
@@ -73,9 +87,13 @@ func (w *Workspace) Outline(ctx context.Context, target string) ([]OutlineEntry,
 
 	var out []OutlineEntry
 	for _, f := range files {
-		file := relPath(root, snap.fset.Position(f.Pos()).Filename)
+		file := relPath(root, fset.Position(f.Pos()).Filename)
 		for _, d := range f.Decls {
-			out = append(out, outlineDecl(snap.fset, file, d)...)
+			entries := outlineDecl(fset, file, d)
+			for i := range entries {
+				entries[i].Standalone = standalone
+			}
+			out = append(out, entries...)
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -85,6 +103,38 @@ func (w *Workspace) Outline(ctx context.Context, target string) ([]OutlineEntry,
 		return out[i].StartLine < out[j].StartLine
 	})
 	return out, nil
+}
+
+// parseStandalone parses a Go file, or every .go file directly inside a
+// directory, without type-checking. For files outside any loaded
+// package: a downloaded file, a cloned repository, a sibling module.
+func parseStandalone(fset *token.FileSet, target string) ([]*ast.File, error) {
+	info, err := os.Stat(target)
+	if err != nil {
+		return nil, fmt.Errorf("file %s is not part of any loaded package and cannot be read: %w", target, err)
+	}
+	var paths []string
+	if info.IsDir() {
+		matches, err := filepath.Glob(filepath.Join(target, "*.go"))
+		if err != nil {
+			return nil, err
+		}
+		paths = matches
+		if len(paths) == 0 {
+			return nil, fmt.Errorf("no Go files in %s", target)
+		}
+	} else {
+		paths = []string{target}
+	}
+	var files []*ast.File
+	for _, path := range paths {
+		f, err := parser.ParseFile(fset, path, nil, parser.ParseComments|parser.SkipObjectResolution)
+		if err != nil {
+			return nil, fmt.Errorf("parsing %s: %w", path, err)
+		}
+		files = append(files, f)
+	}
+	return files, nil
 }
 
 // outlineDecl renders one declaration. Grouped var/const/type blocks
@@ -190,6 +240,9 @@ func FormatOutline(entries []OutlineEntry) string {
 		return "No declarations."
 	}
 	var b strings.Builder
+	if entries[0].Standalone {
+		b.WriteString("Parsed without type information: not part of any loaded package.\n\n")
+	}
 	current := ""
 	for _, e := range entries {
 		if e.File != current {

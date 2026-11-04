@@ -43,7 +43,10 @@ The goal of the read workflow is to understand the codebase with the fewest file
 9. **Look into dependencies and the standard library the same way**: `gov_outline`, `gov_package_api` and `gov_definition` accept any import path the module resolves, and `pkg.Symbol` resolves through the file's imports. `gov_symbol_references`, `gov_callers`, `gov_callees` and `gov_implementations` on such a symbol also look inside its own package, so "how does this library use its own type" is one call. Do NOT run `go doc`, locate a module directory with `go list -m -f '{{.Dir}}'` to grep or read it, or open files under the module cache by hand.
    EXAMPLE: `gov_package_api({"packagePaths":["github.com/jackc/pgx/v5/pgtype"]})`, `gov_definition({"file":"/path/to/store.go","symbol":"pgtype.UUID.Scan"})`, `gov_symbol_references({"file":"/path/to/handler.go","symbol":"jsonrpc.ResponseWriter"})`
 
-10. **Find every use of a dependency**: Before replacing or upgrading a library, use `gov_symbol_references` with `pkg.Symbol` for each symbol in use, from a file that imports it. It is exact where grep over `pkg\.\w+` is not, and reports the enclosing package of each use.
+10. **Study another repository**: Clone it (`git clone --depth 1`) into a scratch directory instead of fetching files one by one through `gh api` or `curl`. `gov_outline` on a file or directory of the clone lists its declarations without type information. Do NOT grep for `^func` or `^type` to outline a file.
+   EXAMPLE: `gov_outline({"target":"/tmp/study/pvp/internal/console"})`
+
+11. **Find every use of a dependency**: Before replacing or upgrading a library, use `gov_symbol_references` with `pkg.Symbol` for each symbol in use, from a file that imports it. It is exact where grep over `pkg\.\w+` is not, and reports the enclosing package of each use.
    EXAMPLE: `gov_symbol_references({"file":"/path/to/trail.go","symbol":"uuid.NewSHA1"})`
 
 ### Write workflow
