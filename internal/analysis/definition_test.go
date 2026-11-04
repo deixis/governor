@@ -66,4 +66,26 @@ func TestDefinitionOf(t *testing.T) {
 	if _, err := ws.DefinitionOf(ctx, filepath.Join(dir, "server.go"), "sub.Nope"); err == nil {
 		t.Error("expected error for unknown symbol in imported package")
 	}
+
+	// Standard library symbol: export data gives the signature, the
+	// on-demand source load gives the doc.
+	def, err = ws.DefinitionOf(ctx, filepath.Join(dir, "server.go"), "fmt.Sprintf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if def.Package != "fmt" || !filepath.IsAbs(def.Position) || !strings.HasSuffix(strings.SplitN(def.Position, ":", 2)[0], "print.go") {
+		t.Errorf("def = %+v", def)
+	}
+	if !strings.HasPrefix(def.Doc, "Sprintf formats according to a format specifier") {
+		t.Errorf("doc = %q", def.Doc)
+	}
+
+	// Method of a standard library type.
+	def, err = ws.DefinitionOf(ctx, filepath.Join(dir, "server.go"), "fmt.State.Write")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if def.Kind != "method" || !strings.HasPrefix(def.Doc, "Write is the function to call") {
+		t.Errorf("def = %+v", def)
+	}
 }

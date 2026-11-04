@@ -54,3 +54,24 @@ func TestOutline(t *testing.T) {
 		t.Error("expected error for unknown package")
 	}
 }
+
+func TestOutline_External(t *testing.T) {
+	ws := NewWorkspace(copyFixture(t, "sample"))
+	entries, err := ws.Outline(context.Background(), "strings")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := FormatOutline(entries)
+	if !strings.Contains(text, "func (b *Builder) WriteString(s string) (int, error)") {
+		t.Errorf("missing Builder.WriteString in:\n%s", text)
+	}
+	if strings.Contains(text, "func TestBuilder") {
+		t.Errorf("test file leaked into external outline:\n%s", text)
+	}
+	for _, e := range entries {
+		if !filepath.IsAbs(e.File) {
+			t.Errorf("external file %q should be absolute", e.File)
+			break
+		}
+	}
+}

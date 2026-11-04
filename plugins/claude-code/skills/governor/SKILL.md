@@ -19,8 +19,12 @@ Governor exposes a type-checked view of the workspace as `gov_*` MCP tools. They
 | Every reference, for a rename or signature change | `gov_symbol_references` |
 | What does this file depend on? | `gov_file_context` |
 | What does this package export? | `gov_package_api` |
+| What does a dependency or stdlib package look like? | `gov_outline` or `gov_package_api` with its import path; `gov_definition` with `pkg.Symbol` |
+| Where is a library symbol used, before swapping the library? | `gov_symbol_references` with `pkg.Symbol`, from a file importing it |
 
 Symbol forms: `Foo`, `T.Method`, `T.Field`, `pkg.Symbol`, `pkg.T.Method`. `pkg` is an import name in the given file.
+
+The tools resolve any import path the module can, so the standard library and every go.mod dependency are in reach. Do not run `go doc`, find a module directory with `go list -m -f '{{.Dir}}'` to grep it, or read module cache files by hand.
 
 ## Editing
 

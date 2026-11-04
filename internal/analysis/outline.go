@@ -25,7 +25,9 @@ type OutlineEntry struct {
 
 // Outline lists the top-level declarations of a file (absolute path) or
 // a package (import path), with line ranges and one-line summaries.
-// Bodies are never included. Test files are included for packages.
+// Bodies are never included. Test files are included for workspace
+// packages. An import path outside the workspace (standard library,
+// dependency) is loaded on demand without tests.
 func (w *Workspace) Outline(ctx context.Context, target string) ([]OutlineEntry, error) {
 	snap, err := w.load(ctx)
 	if err != nil {
@@ -60,7 +62,12 @@ func (w *Workspace) Outline(ctx context.Context, target string) ([]OutlineEntry,
 			}
 		}
 		if len(files) == 0 {
-			return nil, fmt.Errorf("package %s not found in workspace", target)
+			// Not a workspace package: standard library or dependency.
+			p, err := snap.externalPackage(ctx, target)
+			if err != nil {
+				return nil, err
+			}
+			files = p.Syntax
 		}
 	}
 
