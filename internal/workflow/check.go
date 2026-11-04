@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -189,7 +190,7 @@ func FormatFailureSymbols(rr *report.RunResult) []string {
 		lintPkgs[li.Package]++
 	}
 	for pkg, count := range lintPkgs {
-		out = append(out, fmt.Sprintf("%s — %d lint issues", packageLabel(pkg), count))
+		out = append(out, fmt.Sprintf("%s — %d lint issues", cmp.Or(pkg, report.NoPackage), count))
 	}
 
 	scPkgs := make(map[string]int)
@@ -197,18 +198,8 @@ func FormatFailureSymbols(rr *report.RunResult) []string {
 		scPkgs[si.Package]++
 	}
 	for pkg, count := range scPkgs {
-		out = append(out, fmt.Sprintf("%s — %d staticcheck issues", packageLabel(pkg), count))
+		out = append(out, fmt.Sprintf("%s — %d staticcheck issues", cmp.Or(pkg, report.NoPackage), count))
 	}
 
 	return out
-}
-
-// packageLabel names a failure group. Diagnostics outside any workspace
-// package are reachable through gov_inspect by the label or without a
-// symbol.
-func packageLabel(pkg string) string {
-	if pkg == "" {
-		return report.NoPackage
-	}
-	return pkg
 }
