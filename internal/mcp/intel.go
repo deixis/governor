@@ -3,6 +3,7 @@ package mcp
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/deixis/governor/internal/analysis"
@@ -44,21 +45,17 @@ type symbolParams struct {
 	Show   []string `json:"show,omitempty" jsonschema:"Sections to return, any of: definition, references, callers, callees, implementations. Default: definition and references."`
 }
 
-// symbolSections lists the sections in output order with the function
-// that renders each. A section that does not apply to the symbol's kind
-// (callers of a type, callees of an interface method) renders its error
-// in place rather than failing the call.
+// symbolSectionNames lists every section gov_symbol accepts, in output order.
+var symbolSectionNames = []string{"definition", "references", "callers", "callees", "implementations"}
+
+// symbolSections lists the sections after definition, in output order,
+// with the function that renders each. A section that does not apply to
+// the symbol's kind (callers of a type, callees of an interface method)
+// renders its error in place rather than failing the call.
 var symbolSections = []struct {
 	name   string
 	render func(ctx context.Context, w *analysis.Workspace, file, symbol string) (string, error)
 }{
-	{"definition", func(ctx context.Context, w *analysis.Workspace, file, symbol string) (string, error) {
-		def, err := w.DefinitionOf(ctx, file, symbol)
-		if err != nil {
-			return "", err
-		}
-		return analysis.FormatDefinition(def), nil
-	}},
 	{"references", func(ctx context.Context, w *analysis.Workspace, file, symbol string) (string, error) {
 		refs, err := w.References(ctx, file, symbol)
 		if err != nil {
@@ -97,24 +94,24 @@ func (h *handler) symbolHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, 
 	if len(p.Show) > 0 {
 		show = make(map[string]bool, len(p.Show))
 		for _, s := range p.Show {
-			known := false
-			for _, sec := range symbolSections {
-				known = known || sec.name == s
-			}
-			if !known {
-				return errorResult(fmt.Sprintf("unknown show value %q; use definition, references, callers, callees or implementations", s))
+			if !slices.Contains(symbolSectionNames, s) {
+				return errorResult(fmt.Sprintf("unknown show value %q; use %s", s, strings.Join(symbolSectionNames, ", ")))
 			}
 			show[s] = true
 		}
 	}
 
 	// Resolve once up front so an unknown symbol is one error, not one
-	// per section.
-	if _, err := h.intel.DefinitionOf(ctx, p.File, p.Symbol); err != nil {
+	// per section; the result is the definition section when asked for.
+	def, err := h.intel.DefinitionOf(ctx, p.File, p.Symbol)
+	if err != nil {
 		return errorResult(fmt.Sprintf("symbol failed: %v", err))
 	}
 
 	var out []string
+	if show["definition"] {
+		out = append(out, analysis.FormatDefinition(def))
+	}
 	for _, sec := range symbolSections {
 		if !show[sec.name] {
 			continue

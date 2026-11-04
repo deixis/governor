@@ -37,14 +37,14 @@ func (w *Workspace) PackageAPI(ctx context.Context, importPaths []string) (strin
 		if i > 0 {
 			b.WriteString("\n")
 		}
-		// A file path stands for its package.
-		if filepath.IsAbs(path) {
-			pkgs, err := snap.packagesForFile(path)
+		// A file or directory path stands for the package in that directory.
+		if strings.HasSuffix(path, ".go") || filepath.IsAbs(path) {
+			pkgPath, err := snap.packageInDir(path)
 			if err != nil {
 				fmt.Fprintf(&b, "// %v\n", err)
 				continue
 			}
-			path = pkgs[0].PkgPath
+			path = pkgPath
 		}
 		p, ok := byPath[path]
 		if !ok {

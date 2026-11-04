@@ -251,8 +251,8 @@ func sameObject(pkg *types.Package, obj types.Object) types.Object {
 			if !ok {
 				continue
 			}
-			for i := 0; i < st.NumFields(); i++ {
-				if st.Field(i) == v {
+			for field := range st.Fields() {
+				if field == v {
 					return memberOf(pkg, name, v.Name())
 				}
 			}
@@ -379,6 +379,28 @@ func (s *snapshot) packagesForFile(file string) ([]*packages.Package, error) {
 		}
 	}
 	return nil, fmt.Errorf("file %s is not part of any loaded package", file)
+}
+
+// packageInDir returns the import path of the plain (non-test) package
+// compiled from path when path is a directory, or from its directory
+// when path is a file. A _test.go file of an external test package maps
+// to the package under test this way.
+func (s *snapshot) packageInDir(path string) (string, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", err
+	}
+	dir := abs
+	if info, err := os.Stat(abs); err == nil && !info.IsDir() {
+		dir = filepath.Dir(abs)
+	}
+	dir = canonical(dir)
+	for _, p := range s.pkgs {
+		if p.ID == p.PkgPath && p.Dir != "" && canonical(p.Dir) == dir {
+			return p.PkgPath, nil
+		}
+	}
+	return "", fmt.Errorf("%s is not part of any loaded package", path)
 }
 
 // contains reports whether the canonical path file belongs to a loaded

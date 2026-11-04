@@ -38,6 +38,35 @@ func TestPackageAPI(t *testing.T) {
 	}
 }
 
+// A file, a _test.go file or a directory stands for the package in that
+// directory.
+func TestPackageAPI_Paths(t *testing.T) {
+	dir := copyFixture(t, "sample")
+	ws := NewWorkspace(dir)
+	for _, target := range []string{
+		filepath.Join(dir, "server.go"),
+		filepath.Join(dir, "server_test.go"),
+		dir,
+		filepath.Join(dir, "sub"),
+	} {
+		out, err := ws.PackageAPI(context.Background(), []string{target})
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := `// import "example.com/sample"`
+		if filepath.Base(target) == "sub" {
+			want = `// import "example.com/sample/sub"`
+		}
+		if !strings.Contains(out, want) {
+			t.Errorf("%s: missing %q in:\n%s", target, want, out)
+		}
+	}
+	out, err := ws.PackageAPI(context.Background(), []string{filepath.Join(dir, "nope")})
+	if err != nil || !strings.Contains(out, "is not part of any loaded package") {
+		t.Errorf("unknown path: %v\n%s", err, out)
+	}
+}
+
 func TestPackageAPI_External(t *testing.T) {
 	ws := NewWorkspace(copyFixture(t, "sample"))
 	out, err := ws.PackageAPI(context.Background(), []string{"io", "golang.org/x/tools/go/packages"})
