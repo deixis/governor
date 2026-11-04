@@ -71,6 +71,39 @@ func symlinkTo(t *testing.T, target string) string {
 	return link
 }
 
+func TestExternalPackage_RejectsPatterns(t *testing.T) {
+	ws := NewWorkspace(copyFixture(t, "sample"))
+	snap, err := ws.load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, pattern := range []string{"", "all", "std", "cmd", "./...", "golang.org/x/...", "file=main.go", "fmt strings"} {
+		if _, err := snap.externalPackage(context.Background(), pattern); err == nil || !strings.Contains(err.Error(), "not an import path") {
+			t.Errorf("%q: err = %v", pattern, err)
+		}
+	}
+}
+
+func TestExternalPackage_CancelledNotCached(t *testing.T) {
+	ws := NewWorkspace(copyFixture(t, "sample"))
+	snap, err := ws.load(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := snap.externalPackage(cancelled, "strings"); err == nil {
+		t.Fatal("expected error from cancelled context")
+	}
+	p, err := snap.externalPackage(context.Background(), "strings")
+	if err != nil {
+		t.Fatalf("cancelled load was cached: %v", err)
+	}
+	if p.PkgPath != "strings" {
+		t.Errorf("PkgPath = %q", p.PkgPath)
+	}
+}
+
 func TestCacheInvalidation(t *testing.T) {
 	dir := copyFixture(t, "sample")
 	ws := NewWorkspace(dir)

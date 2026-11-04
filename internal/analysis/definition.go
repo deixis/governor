@@ -107,16 +107,15 @@ func (s *snapshot) declSite(ctx context.Context, obj types.Object) (token.Pos, s
 }
 
 // externalFileSyntax matches an export-data filename against the files
-// of an on-demand loaded package. Standard library files are recorded as
-// $GOROOT/src/..., so a suffix match covers them.
+// of an on-demand loaded package. Export data keeps absolute paths for
+// module cache files, $GOROOT/src/... for the standard library and
+// module@version/... under -trimpath; the two trimmed forms are matched
+// by suffix.
 func externalFileSyntax(p *packages.Package, filename string) *ast.File {
-	if f := fileSyntax(p, filename); f != nil {
-		return f
+	if filepath.IsAbs(filename) {
+		return fileSyntax(p, filename)
 	}
-	rel, ok := strings.CutPrefix(filename, "$GOROOT/")
-	if !ok {
-		return nil
-	}
+	rel := strings.TrimPrefix(filename, "$GOROOT/")
 	for i, f := range p.CompiledGoFiles {
 		if i < len(p.Syntax) && strings.HasSuffix(filepath.ToSlash(f), "/"+rel) {
 			return p.Syntax[i]

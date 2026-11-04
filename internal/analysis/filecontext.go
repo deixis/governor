@@ -127,6 +127,11 @@ func qualifiedName(obj types.Object) string {
 // relPath makes file relative to root when it lives under it, comparing
 // symlink-resolved forms when the paths as given do not match.
 func relPath(root, file string) string {
+	if strings.HasPrefix(file, "$") {
+		// Export-data placeholder such as $GOROOT/src/fmt/print.go; making
+		// it absolute would anchor it under the working directory.
+		return file
+	}
 	abs, err := filepath.Abs(file)
 	if err != nil {
 		return file

@@ -55,14 +55,18 @@ type snapshot struct {
 	// external caches packages outside the workspace (standard library,
 	// module dependencies) loaded with syntax on demand, by import path.
 	// A failed load is cached too so a bad path costs one `go list`.
+	// extMu guards the map only; each entry has its own lock so loads of
+	// different packages run in parallel.
 	extMu    sync.Mutex
-	external map[string]externalLoad
+	external map[string]*externalLoad
 }
 
 // externalLoad is one cached on-demand load.
 type externalLoad struct {
-	pkg *packages.Package
-	err error
+	mu   sync.Mutex
+	done bool
+	pkg  *packages.Package
+	err  error
 }
 
 // Workspace loads and caches type information for a Go module tree.
@@ -163,20 +167,39 @@ func (w *Workspace) load(ctx context.Context) (*snapshot, error) {
 // callers check the snapshot first.
 func (s *snapshot) externalPackage(ctx context.Context, importPath string) (*packages.Package, error) {
 	s.extMu.Lock()
-	defer s.extMu.Unlock()
 	if s.external == nil {
-		s.external = make(map[string]externalLoad)
+		s.external = make(map[string]*externalLoad)
 	}
-	if cached, ok := s.external[importPath]; ok {
-		return cached.pkg, cached.err
+	e, ok := s.external[importPath]
+	if !ok {
+		e = &externalLoad{}
+		s.external[importPath] = e
+	}
+	s.extMu.Unlock()
+
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.done {
+		return e.pkg, e.err
 	}
 	pkg, err := loadExternal(ctx, s.root, s.fset, importPath)
-	s.external[importPath] = externalLoad{pkg: pkg, err: err}
+	if err != nil && ctx.Err() != nil {
+		// A cancelled or expired call says nothing about the package;
+		// the next caller retries.
+		return nil, err
+	}
+	e.pkg, e.err, e.done = pkg, err, true
 	return pkg, err
 }
 
+// loadExternal loads one package by exact import path. Patterns are
+// rejected up front: `...`, `all`, `std` or `cmd` would parse and
+// type-check hundreds of packages before the single-package check fails.
 func loadExternal(ctx context.Context, root string, fset *token.FileSet, importPath string) (*packages.Package, error) {
-	if importPath == "" || strings.HasPrefix(importPath, ".") || strings.ContainsAny(importPath, " \t\n") {
+	switch {
+	case importPath == "", importPath == "all", importPath == "std", importPath == "cmd",
+		strings.HasPrefix(importPath, "."), strings.Contains(importPath, "..."),
+		strings.Contains(importPath, "="), strings.ContainsAny(importPath, " \t\n"):
 		return nil, fmt.Errorf("package %q: not an import path", importPath)
 	}
 	cfg := &packages.Config{
