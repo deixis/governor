@@ -53,3 +53,62 @@ func TestReferences(t *testing.T) {
 		t.Error("expected error for unknown member")
 	}
 }
+
+// A standard library symbol is searched in the workspace and inside its
+// own package.
+func TestReferences_External(t *testing.T) {
+	dir := copyFixture(t, "sample")
+	ws := NewWorkspace(dir)
+	refs, err := ws.References(context.Background(), filepath.Join(dir, "server.go"), "fmt.Sprintf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var workspace, external int
+	for _, r := range refs {
+		switch r.Package {
+		case "example.com/sample":
+			workspace++
+		case "fmt":
+			external++
+			if !strings.Contains(r.Position, "print.go") {
+				t.Errorf("fmt reference at %q", r.Position)
+			}
+		}
+	}
+	if workspace == 0 || external == 0 {
+		t.Errorf("workspace=%d external=%d in:\n%s", workspace, external, FormatReferences("fmt.Sprintf", refs))
+	}
+}
+
+// A field of a standard library struct: export data keeps no column for
+// it, so it is matched again inside its package through the owning type.
+func TestReferences_ExternalField(t *testing.T) {
+	dir := writeModule(t, map[string]string{
+		"go.mod": "module example.com/e\n\ngo 1.25\n",
+		"e.go": `package e
+
+import "net/url"
+
+func Path(u *url.URL) string { return u.Path }
+`,
+	})
+	refs, err := NewWorkspace(dir).References(context.Background(), filepath.Join(dir, "e.go"), "url.URL.Path")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var def, workspace, external int
+	for _, r := range refs {
+		if r.Definition {
+			def++
+		}
+		switch r.Package {
+		case "example.com/e":
+			workspace++
+		case "net/url":
+			external++
+		}
+	}
+	if def != 1 || workspace != 1 || external < 2 {
+		t.Errorf("def=%d workspace=%d external=%d in:\n%s", def, workspace, external, FormatReferences("url.URL.Path", refs))
+	}
+}

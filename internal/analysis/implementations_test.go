@@ -92,3 +92,30 @@ func (File) Close() error { return nil }
 		t.Errorf("ReadCloser.Close impls = %+v", impls)
 	}
 }
+
+// A standard library interface whose methods mention types of its own
+// package: the implementers inside that package are found.
+func TestImplementations_External(t *testing.T) {
+	dir := writeModule(t, map[string]string{
+		"go.mod": "module example.com/e\n\ngo 1.25\n",
+		"e.go": `package e
+
+import "context"
+
+var _ context.Context
+`,
+	})
+	impls, err := NewWorkspace(dir).Implementations(context.Background(), filepath.Join(dir, "e.go"), "context.Context")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cancelCtx bool
+	for _, im := range impls {
+		if im.Package == "context" && im.Name == "cancelCtx" && im.Kind == "type" && im.Pointer {
+			cancelCtx = true
+		}
+	}
+	if !cancelCtx {
+		t.Errorf("*cancelCtx not among context.Context implementers:\n%s", FormatImplementations("context.Context", impls))
+	}
+}

@@ -21,7 +21,9 @@ type Reference struct {
 
 // References finds every use of symbol across the workspace. The symbol is
 // resolved in the scope of file and may be Foo, T.Method, T.Field, or
-// pkg.Symbol where pkg is an import name in that file.
+// pkg.Symbol where pkg is an import name in that file. A symbol declared
+// in a dependency or the standard library is also searched within its
+// own package.
 func (w *Workspace) References(ctx context.Context, file, symbol string) ([]Reference, error) {
 	snap, target, err := w.resolve(ctx, file, symbol)
 	if err != nil {
@@ -29,12 +31,7 @@ func (w *Workspace) References(ctx context.Context, file, symbol string) ([]Refe
 	}
 	root := snap.root
 
-	want := objectKey(snap.fset, target)
-	// Every key form ends in the object name; comparing names first skips
-	// building a key for nearly every identifier in the workspace.
-	matches := func(obj types.Object) bool {
-		return obj != nil && obj.Name() == target.Name() && objectKey(snap.fset, obj) == want
-	}
+	name := target.Name()
 	seen := make(map[string]bool)
 	var refs []Reference
 	record := func(p *packages.Package, id *ast.Ident, def bool) {
@@ -46,9 +43,16 @@ func (w *Workspace) References(ctx context.Context, file, symbol string) ([]Refe
 		refs = append(refs, Reference{Position: pos, Package: p.PkgPath, Definition: def})
 	}
 
-	for _, p := range snap.pkgs {
+	for _, t := range snap.scanPackages(ctx, target) {
+		p := t.pkg
 		if p.TypesInfo == nil || isTestMain(p) {
 			continue
+		}
+		want := objectKey(snap.fset, t.obj)
+		// Every key form ends in the object name; comparing names first
+		// skips building a key for nearly every identifier in the package.
+		matches := func(obj types.Object) bool {
+			return obj != nil && obj.Name() == name && objectKey(snap.fset, obj) == want
 		}
 		for id, obj := range p.TypesInfo.Defs {
 			if matches(obj) {

@@ -77,33 +77,46 @@ func signature(obj types.Object) string {
 // line and name. When no source is available the export-data position is
 // returned as is.
 func (s *snapshot) declSite(ctx context.Context, obj types.Object) (token.Pos, string) {
+	_, syntax, pos := s.declFile(ctx, obj)
+	if syntax == nil {
+		return pos, ""
+	}
+	return pos, declDoc(syntax, pos)
+}
+
+// declFile returns the package and parsed file holding obj's declaration
+// and the position of the declaring identifier within that file. For an
+// object outside the workspace the package is loaded on demand. When no
+// source is available the package and file are nil and the position is
+// the export-data one.
+func (s *snapshot) declFile(ctx context.Context, obj types.Object) (*packages.Package, *ast.File, token.Pos) {
 	pos := obj.Pos()
 	if !pos.IsValid() {
-		return pos, ""
+		return nil, nil, pos
 	}
 	p := s.fset.Position(pos)
 	if pkgs := s.byFile[p.Filename]; len(pkgs) > 0 {
 		if syntax := fileSyntax(pkgs[0], p.Filename); syntax != nil {
-			return pos, declDoc(syntax, pos)
+			return pkgs[0], syntax, pos
 		}
-		return pos, ""
+		return nil, nil, pos
 	}
 	if obj.Pkg() == nil {
-		return pos, ""
+		return nil, nil, pos
 	}
 	ext, err := s.externalPackage(ctx, obj.Pkg().Path())
 	if err != nil {
-		return pos, ""
+		return nil, nil, pos
 	}
 	syntax := externalFileSyntax(ext, p.Filename)
 	if syntax == nil {
-		return pos, ""
+		return nil, nil, pos
 	}
 	id := declIdentAt(s.fset, syntax, p.Line, obj.Name())
 	if id == nil {
-		return pos, ""
+		return nil, nil, pos
 	}
-	return id.Pos(), declDoc(syntax, id.Pos())
+	return ext, syntax, id.Pos()
 }
 
 // externalFileSyntax matches an export-data filename against the files

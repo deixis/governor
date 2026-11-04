@@ -201,7 +201,8 @@ from sibling files, and the exported symbols it uses from each imported package.
 		Description: `Find all references to a symbol across the workspace.
 
 Pass "file" (absolute path) and "symbol" (Foo, T.Method, T.Field, or pkg.Symbol).
-The definition is listed first.`,
+The definition is listed first. A symbol from the standard library or a dependency is
+also searched inside its own package, so this answers how a library uses its own types.`,
 	}, h.referencesHandler)
 
 	sdkmcp.AddTool(s, &sdkmcp.Tool{
@@ -219,7 +220,8 @@ Use this instead of grepping for a declaration or running go doc.`,
 
 Pass "file" and "symbol". For an interface: the types that satisfy it. For a concrete
 type: the workspace interfaces it satisfies. For a method: the matching methods on the
-other side. A leading * marks types that satisfy only via pointer receiver.`,
+other side. A leading * marks types that satisfy only via pointer receiver. A symbol
+from the standard library or a dependency is also matched inside its own package.`,
 	}, h.implementationsHandler)
 
 	sdkmcp.AddTool(s, &sdkmcp.Tool{
@@ -227,14 +229,17 @@ other side. A leading * marks types that satisfy only via pointer receiver.`,
 		Description: `Static call sites of a function or method, with the enclosing function of each.
 
 Pass "file" and "symbol". Calls through an interface resolve to the interface method,
-so query the interface method to see dynamic dispatch sites.`,
+so query the interface method to see dynamic dispatch sites. A function from the
+standard library or a dependency also lists its callers inside its own package.`,
 	}, h.callersHandler)
 
 	sdkmcp.AddTool(s, &sdkmcp.Tool{
 		Name: "gov_callees",
 		Description: `Every call made inside a function or method body, in source order.
 
-Pass "file" and "symbol". Calls through function-typed values are prefixed "dynamic:".`,
+Pass "file" and "symbol". Calls through function-typed values are prefixed "dynamic:".
+Works for standard library and dependency functions too; use it to learn what a library
+function does without reading its source.`,
 	}, h.calleesHandler)
 
 	sdkmcp.AddTool(s, &sdkmcp.Tool{

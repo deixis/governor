@@ -27,7 +27,9 @@ type Implementation struct {
 //   - interface method: methods on satisfying types with that name
 //   - concrete method: interface methods it implements
 //
-// The empty interface and interfaces with no methods are skipped.
+// The empty interface and interfaces with no methods are skipped. A
+// symbol declared in a dependency or the standard library is also
+// matched against the types of its own package.
 func (w *Workspace) Implementations(ctx context.Context, file, symbol string) ([]Implementation, error) {
 	snap, obj, err := w.resolve(ctx, file, symbol)
 	if err != nil {
@@ -71,16 +73,17 @@ func (w *Workspace) Implementations(ctx context.Context, file, symbol string) ([
 	if !ok {
 		return nil, fmt.Errorf("%s is a %s, expected a type or method", symbol, objectKind(obj))
 	}
-	queryType := tn.Type()
-	queryKey := objectKey(snap.fset, tn)
-	_, queryIsIface := queryType.Underlying().(*types.Interface)
-
 	seen := make(map[string]bool)
 	var out []Implementation
-	for _, p := range snap.pkgs {
-		if p.Types == nil || isTestMain(p) {
+	for _, t := range snap.scanPackages(ctx, tn) {
+		p := t.pkg
+		query, ok := t.obj.(*types.TypeName)
+		if !ok || p.Types == nil || isTestMain(p) {
 			continue
 		}
+		queryType := query.Type()
+		queryKey := objectKey(snap.fset, query)
+		_, queryIsIface := queryType.Underlying().(*types.Interface)
 		scope := p.Types.Scope()
 		for _, name := range scope.Names() {
 			cand, ok := scope.Lookup(name).(*types.TypeName)
