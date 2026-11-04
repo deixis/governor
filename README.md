@@ -177,6 +177,7 @@ Backed by an in-process, cached `go/packages` load of the workspace. The first c
 | `gov_symbol` | One symbol: definition, references, callers, callees, implementations; `show` picks the sections, default definition and references |
 | `gov_file_context` | Cross-file and cross-package dependencies of a file |
 | `gov_fix` | Repair imports, gofumpt, modernize rewrites, then diagnostics for the files; with no files, workspace diagnostics only |
+| `gov_plan` | Impact of an add, remove, replace or move of a declaration: OK with a summary and follow-ups, NEEDS DECISION, or BLOCKED with a fix per cause; `force` to proceed anyway |
 
 ### Fix on every edit
 

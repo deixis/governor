@@ -58,20 +58,23 @@ The editing workflow is iterative. Cycle through these steps until the task is c
 2. **Measure the blast radius**: Before modifying the definition of any symbol, use `gov_symbol` with `references`, `callers` and `implementations` in one call: every reference, every call site for a signature or behaviour change, and the other side of any interface it takes part in. Read the files containing references to evaluate whether further edits are required.
    EXAMPLE: `gov_symbol({"file":"/path/to/server.go","symbol":"Server.Run","show":["references","callers","implementations"]})`
 
-3. **Make edits**: Make the required edits, including edits to the references and implementations you identified. Don't proceed until all planned edits are complete.
+3. **Plan a refactor before doing it**: To add, remove, replace or move a declaration, call `gov_plan` first. It answers OK with a one-line summary and what you must still do afterwards, NEEDS DECISION with the choice to make, or BLOCKED with a cause and a fix for each item. A moved type takes its methods along, whichever files declare them; unexported helpers only it uses are pulled along; shared helpers are a decision. Do NOT work out a refactor's impact by hand or with text search, and never move or rewrite Go with sed, perl, sd or awk. `force` proceeds past blockers when you intend to fix the fallout yourself.
+   EXAMPLE: `gov_plan({"op":"move","file":"/path/to/foo.go","symbol":"Thing","target":"example.com/m/bar"})`
 
-4. **Fix and check each edited file**: After every code modification, you MUST call `gov_fix` with the paths of the files you edited. It repairs missing and unused imports, formats with gofumpt, applies safe modernisation rewrites, and then reports the remaining build and type errors for those files. It changes the files on disk, so re-read any file it reports as changed before editing it again.
+4. **Make edits**: Make the required edits, including edits to the references and implementations you identified. Don't proceed until all planned edits are complete.
+
+5. **Fix and check each edited file**: After every code modification, you MUST call `gov_fix` with the paths of the files you edited. It repairs missing and unused imports, formats with gofumpt, applies safe modernisation rewrites, and then reports the remaining build and type errors for those files. It changes the files on disk, so re-read any file it reports as changed before editing it again.
    EXAMPLE: `gov_fix({"files":["/path/to/server.go"]})`
 
-5. **Fix errors**: If `gov_fix` reports diagnostics, fix them and call `gov_fix` again. Note that Go diagnostic messages may contain a summary of the source code, which may not match its exact text. `gov_fix` with no files changes nothing and reports errors for the whole workspace when you need to confirm nothing else broke.
+6. **Fix errors**: If `gov_fix` reports diagnostics, fix them and call `gov_fix` again. Note that Go diagnostic messages may contain a summary of the source code, which may not match its exact text. `gov_fix` with no files changes nothing and reports errors for the whole workspace when you need to confirm nothing else broke.
 
-6. **Check changes**: Once `gov_fix` reports no diagnostics (and ONLY then), you MUST call `gov_check` to verify correctness. It runs auto-fix, test, lint, and staticcheck in order, stopping on first failure. Pass `fix=false` to skip auto-fix. Do NOT run tests on `./...` unless the user explicitly requests it. Scope to the packages you changed.
+7. **Check changes**: Once `gov_fix` reports no diagnostics (and ONLY then), you MUST call `gov_check` to verify correctness. It runs auto-fix, test, lint, and staticcheck in order, stopping on first failure. Pass `fix=false` to skip auto-fix. Do NOT run tests on `./...` unless the user explicitly requests it. Scope to the packages you changed.
    EXAMPLE: `gov_check({"packages": ["./pkg/foo/..."]})`
 
-7. **Audit code quality**: Before considering a code modification done, you MUST call `gov_audit` to evaluate code quality and identify security risks. If your edits added or updated dependencies in `go.mod`, this step also checks that new dependencies do not introduce vulnerabilities.
+8. **Audit code quality**: Before considering a code modification done, you MUST call `gov_audit` to evaluate code quality and identify security risks. If your edits added or updated dependencies in `go.mod`, this step also checks that new dependencies do not introduce vulnerabilities.
    EXAMPLE: `gov_audit({"packages": ["./pkg/foo/..."]})`
 
-8. **Inspect diagnostics**: Use `gov_inspect` to drill into a `gov_check` or `gov_audit` run. Do NOT re-run the command just to see more output.
+9. **Inspect diagnostics**: Use `gov_inspect` to drill into a `gov_check` or `gov_audit` run. Do NOT re-run the command just to see more output.
    - `symbol` as an import path (e.g. `example.com/foo`) → all diagnostics for that package.
    - `symbol` as `importpath.Symbol` (e.g. `example.com/foo.TestAdd`) → diagnostics for that function.
 

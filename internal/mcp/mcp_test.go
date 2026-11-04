@@ -464,6 +464,36 @@ func TestGovFileContext(t *testing.T) {
 	}
 }
 
+func TestGovPlan(t *testing.T) {
+	dir := copyFixture(t, "passing")
+	cs := setup(t, dir, nil)
+	res := callTool(t, cs, "gov_plan", map[string]any{
+		"op": "replace", "file": filepath.Join(dir, "main.go"), "symbol": "Add",
+		"source": "// Add adds two integers.\nfunc Add(a, b, c int) int { return a + b + c }",
+	})
+	text := resultText(res)
+	if res.IsError || !strings.HasPrefix(text, "OK: replace Add") || !strings.Contains(text, "Update the callers (1)") || !strings.Contains(text, "main_test.go:6:12  in TestAdd") {
+		t.Errorf("unexpected output:\n%s", text)
+	}
+
+	res = callTool(t, cs, "gov_plan", map[string]any{"op": "add", "target": "testpassing", "source": "func Add() {}"})
+	text = resultText(res)
+	if res.IsError || !strings.HasPrefix(text, "BLOCKED: add func Add") || !strings.Contains(text, "Fix: use op replace") {
+		t.Errorf("unexpected output:\n%s", text)
+	}
+
+	res = callTool(t, cs, "gov_plan", map[string]any{"op": "add", "target": "testpassing", "source": "func Add() {}", "force": true})
+	text = resultText(res)
+	if res.IsError || !strings.HasPrefix(text, "OK (forced): add func Add") {
+		t.Errorf("unexpected output:\n%s", text)
+	}
+
+	res = callTool(t, cs, "gov_plan", map[string]any{"op": "rename"})
+	if text := resultText(res); !res.IsError || !strings.Contains(text, "expected add, remove, replace or move") {
+		t.Errorf("unexpected output:\n%s", text)
+	}
+}
+
 func TestGovOutline(t *testing.T) {
 	dir := copyFixture(t, "passing")
 	cs := setup(t, dir, nil)
