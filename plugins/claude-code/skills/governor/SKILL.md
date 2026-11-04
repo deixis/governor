@@ -31,6 +31,7 @@ The tools resolve any import path the module can, so the standard library and ev
 ## Editing
 
 1. Measure blast radius first: `gov_symbol` with `references`, plus `callers` for signature changes and `implementations` for interfaces, in one call.
+   For a declaration-level change (add, remove, replace, move) call `gov_plan` instead: one call returns OK with a summary and what is left for you, NEEDS DECISION, or BLOCKED with a fix per cause. A move takes methods from every file along and pulls private helpers. `force` proceeds anyway and lists the fallout.
 2. Edit with the Edit or Write tool, or `sg` (ast-grep) for a repeated pattern. Never `sed`, `perl`, `sd` or `awk` on a Go file; the plugin hook refuses them. To migrate a type or signature, change the definition, run `gov_fix` on its file, then `gov_fix` with no files: it lists every site that must change.
 3. The plugin hook runs `governor fix` on every edited `.go` file and shows the result. It repairs imports, formats with gofumpt, applies safe modernize rewrites, and lists remaining type errors. Because it rewrites the file, re-read before editing again. Without the hook, call `gov_fix({"files":[...]})` yourself.
 4. Fix any reported diagnostics, then `gov_check({"packages":["./changed/pkg/..."]})` before declaring the work done. Use `gov_inspect` to drill into failures instead of re-running.

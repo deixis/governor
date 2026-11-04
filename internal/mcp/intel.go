@@ -167,8 +167,70 @@ func (h *handler) fixHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p f
 	return textResult(analysis.FormatFixResults(results))
 }
 
+type planParams struct {
+	Op        string         `json:"op" jsonschema:"One of add, remove, replace, move."`
+	File      string         `json:"file,omitempty" jsonschema:"Absolute path of a file where symbol is visible (remove, replace, move). For add without target: the file to add to."`
+	Symbol    string         `json:"symbol,omitempty" jsonschema:"Foo, T.Method, T.Field or pkg.Symbol (remove, replace, move)."`
+	Source    string         `json:"source,omitempty" jsonschema:"Go declaration text, no package clause, imports allowed first (add, replace)."`
+	Target    string         `json:"target,omitempty" jsonschema:"Package import path or absolute file path: where add puts the code, where move sends the symbol."`
+	Decisions *planDecisions `json:"decisions,omitempty" jsonschema:"Answers to a previous plan's questions (move)."`
+	Force     bool           `json:"force,omitempty" jsonschema:"Proceed past blockers and unanswered questions; what was forced past is listed as follow-ups to fix afterwards."`
+}
+
+type planDecisions struct {
+	Export []string `json:"export,omitempty" jsonschema:"Unexported source-package symbols to export in place (move)."`
+	Pull   []string `json:"pull,omitempty" jsonschema:"Shared unexported symbols to move along anyway (move)."`
+}
+
+func (p planParams) request() analysis.Request {
+	req := analysis.Request{
+		Op:     p.Op,
+		File:   p.File,
+		Symbol: p.Symbol,
+		Source: p.Source,
+		Target: p.Target,
+		Force:  p.Force,
+	}
+	if p.Decisions != nil {
+		req.Decisions = analysis.Decisions{Export: p.Decisions.Export, Pull: p.Decisions.Pull}
+	}
+	return req
+}
+
+func (h *handler) planHandler(ctx context.Context, _ *sdkmcp.CallToolRequest, p planParams) (*sdkmcp.CallToolResult, any, error) {
+	if p.Op == "" {
+		return errorResult("op is required: add, remove, replace or move")
+	}
+	report, err := h.intel.Plan(ctx, p.request())
+	if err != nil {
+		return errorResult(fmt.Sprintf("plan failed: %v", err))
+	}
+	return textResult(analysis.FormatReport(report))
+}
+
 // registerIntelTools registers the code intelligence tools.
 func registerIntelTools(s *sdkmcp.Server, h *handler) {
+	sdkmcp.AddTool(s, &sdkmcp.Tool{
+		Name: "gov_plan",
+		Description: `Impact of an intended change, without changing anything. Run before gov_apply.
+
+Pass "op" and the fields it needs:
+  add:     "source" (declarations) and "target" (package path, or file path; a new file is
+           named after the first declaration). Reports name collisions and imports.
+  remove:  "file" and "symbol". A type takes its methods along. Reports every use that
+           breaks, by package; interface relations lost; declarations left unused.
+  replace: "file", "symbol", "source" (one declaration, same name and kind). Reports
+           signature or shape changes, callers to update, interface methods affected.
+  move:    "file", "symbol", "target" (destination package or file). Reports the moved
+           set, unexported helpers pulled along, shared helpers needing a decision
+           (export or pull), import cycles, references rewritten per package.
+Verdicts: OK with a one-line summary and, when needed, what you must do after apply;
+NEEDS DECISION (answer through "decisions" and plan again); BLOCKED (each cause comes
+with a fix). "force": true turns blockers and questions into follow-ups and lets apply
+proceed. Use this instead of chaining gov_symbol lookups by hand, and never a regex, for
+a refactor.`,
+	}, h.planHandler)
+
 	sdkmcp.AddTool(s, &sdkmcp.Tool{
 		Name: "gov_search",
 		Description: `Fuzzy symbol search across the workspace.
