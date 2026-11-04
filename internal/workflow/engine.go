@@ -163,6 +163,44 @@ func (e *Engine) PackageFiles(ctx context.Context, pkgs []string) ([]string, err
 	return nonEmptyLines(res.Stdout), nil
 }
 
+// packageDirs maps each package directory to its import path, so that
+// file-based results (staticcheck, golangci-lint) can be attributed to a
+// package. Best-effort: on go list failure it returns an empty map.
+func (e *Engine) packageDirs(ctx context.Context, pkgs []string) map[string]string {
+	dirs := make(map[string]string)
+	argv := append([]string{"go", "list", "-e", "-f", "{{.Dir}}\t{{.ImportPath}}"}, pkgs...)
+	res, err := e.Runner.Run(ctx, argv, "")
+	if err != nil || res.ExitCode != 0 {
+		return dirs
+	}
+	for _, line := range nonEmptyLines(res.Stdout) {
+		if dir, importPath, ok := strings.Cut(line, "\t"); ok && dir != "" {
+			dirs[dir] = importPath
+		}
+	}
+	return dirs
+}
+
+// locate resolves a tool-reported file to its package import path and a
+// workspace-relative path. Relative files are taken as relative to the
+// workspace, where tools run. Files outside the workspace keep their
+// absolute path.
+func (e *Engine) locate(dirs map[string]string, file string) (pkg, rel string) {
+	if file == "" {
+		return "", ""
+	}
+	abs := file
+	if !filepath.IsAbs(abs) {
+		abs = filepath.Join(e.Workspace, abs)
+	}
+	pkg = dirs[filepath.Dir(abs)]
+	rel = abs
+	if r, err := filepath.Rel(e.Workspace, abs); err == nil && !strings.HasPrefix(r, "..") {
+		rel = r
+	}
+	return pkg, rel
+}
+
 func nonEmptyLines(out []byte) []string {
 	var lines []string
 	for line := range strings.SplitSeq(string(out), "\n") {

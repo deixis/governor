@@ -191,6 +191,7 @@ func TestCheck_GofumptCoversPackageFilesOnly(t *testing.T) {
 	ar := &argvRunner{results: map[string]*runner.Result{
 		"go list -f " + goFilesTemplate + " ./...":          {Stdout: []byte("/project/a.go\n/project/a_test.go\n")},
 		"/stub/gofumpt -l /project/a.go /project/a_test.go": {Stdout: []byte("/project/a.go\n")},
+		"go list -e -f {{.Dir}}\t{{.ImportPath}} ./...":     {Stdout: []byte("/project\texample.com/m\n")},
 	}}
 	e := &Engine{
 		Config:       &config.Config{Check: config.CheckConfig{Steps: []string{"test"}}},
@@ -207,8 +208,8 @@ func TestCheck_GofumptCoversPackageFilesOnly(t *testing.T) {
 	if result.FailedIdx != -2 {
 		t.Errorf("FailedIdx = %d, want -2 (format failure)", result.FailedIdx)
 	}
-	if n := len(result.RunResult.FormatIssues); n != 1 || result.RunResult.FormatIssues[0].File != "a.go" {
-		t.Errorf("FormatIssues = %+v, want one issue for a.go", result.RunResult.FormatIssues)
+	if n := len(result.RunResult.FormatIssues); n != 1 || result.RunResult.FormatIssues[0].File != "a.go" || result.RunResult.FormatIssues[0].Package != "example.com/m" {
+		t.Errorf("FormatIssues = %+v, want one issue for a.go in example.com/m", result.RunResult.FormatIssues)
 	}
 	for _, call := range ar.calls {
 		if strings.HasSuffix(call[0], "gofumpt") && call[len(call)-1] == "." {
@@ -335,5 +336,113 @@ func TestCheck_NilSlicesOnPass(t *testing.T) {
 	}
 	if rr.StaticIssues != nil {
 		t.Errorf("StaticIssues should be nil, got %v", rr.StaticIssues)
+	}
+}
+
+func TestCheck_StaticcheckIssuesAttributedToPackage(t *testing.T) {
+	ar := &argvRunner{results: map[string]*runner.Result{
+		"/stub/staticcheck -f json ./...": {ExitCode: 1, Stdout: []byte(
+			`{"code":"U1000","severity":"error","location":{"file":"/project/internal/a/a.go","line":3,"column":6},"message":"func f is unused"}` + "\n" +
+				`{"code":"compile","severity":"error","location":{"file":"","line":0,"column":0},"message":"load failed"}` + "\n",
+		)},
+		"go list -e -f {{.Dir}}\t{{.ImportPath}} ./...": {Stdout: []byte("/project/internal/a\texample.com/m/internal/a\n")},
+	}}
+	e := &Engine{
+		Config:       &config.Config{Check: config.CheckConfig{Steps: []string{"staticcheck"}}},
+		Runner:       ar,
+		Workspace:    "/project",
+		RepoRoot:     "/project",
+		ToolResolver: func(name string) []string { return []string{"/stub/" + name} },
+	}
+
+	result, err := e.Check(context.Background(), nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issues := result.RunResult.StaticIssues
+	if len(issues) != 2 {
+		t.Fatalf("StaticIssues = %+v, want 2", issues)
+	}
+	if issues[0].Package != "example.com/m/internal/a" || issues[0].File != "internal/a/a.go" {
+		t.Errorf("issue = {Package: %q, File: %q}, want {example.com/m/internal/a, internal/a/a.go}", issues[0].Package, issues[0].File)
+	}
+	if issues[1].Package != "" {
+		t.Errorf("file-less issue Package = %q, want empty", issues[1].Package)
+	}
+
+	failures := strings.Join(FormatFailureSymbols(result.RunResult), "\n")
+	for _, want := range []string{"example.com/m/internal/a — 1 staticcheck issues", "(no package) — 1 staticcheck issues"} {
+		if !strings.Contains(failures, want) {
+			t.Errorf("failures missing %q:\n%s", want, failures)
+		}
+	}
+}
+
+func TestCheck_StaticcheckFailureWithoutIssuesFails(t *testing.T) {
+	ar := &argvRunner{results: map[string]*runner.Result{
+		"/stub/staticcheck -f json ./...": {ExitCode: 126, Stderr: []byte("No version is set for command staticcheck\n")},
+	}}
+	e := &Engine{
+		Config:       &config.Config{Check: config.CheckConfig{Steps: []string{"staticcheck"}}},
+		Runner:       ar,
+		Workspace:    "/project",
+		RepoRoot:     "/project",
+		ToolResolver: func(name string) []string { return []string{"/stub/" + name} },
+	}
+
+	result, err := e.Check(context.Background(), nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := result.Steps[0]
+	if step.Status != "fail" || !strings.Contains(step.Output, "No version is set") {
+		t.Errorf("step = %+v, want fail with shim output", step)
+	}
+}
+
+func TestCheck_LintFailureWithoutIssuesFails(t *testing.T) {
+	ar := &argvRunner{results: map[string]*runner.Result{
+		"/stub/golangci-lint run --out-format json ./...": {ExitCode: 126, Stderr: []byte("No version is set for command golangci-lint\n")},
+	}}
+	e := &Engine{
+		Config:       &config.Config{Check: config.CheckConfig{Steps: []string{"lint"}}},
+		Runner:       ar,
+		Workspace:    "/project",
+		RepoRoot:     "/project",
+		ToolResolver: func(name string) []string { return []string{"/stub/" + name} },
+	}
+
+	result, err := e.Check(context.Background(), nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	step := result.Steps[0]
+	if step.Status != "fail" || !strings.Contains(step.Output, "No version is set") {
+		t.Errorf("step = %+v, want fail with shim output", step)
+	}
+}
+
+func TestCheck_LintIssuesAttributedToPackage(t *testing.T) {
+	ar := &argvRunner{results: map[string]*runner.Result{
+		"/stub/golangci-lint run --out-format json ./...": {ExitCode: 1, Stdout: []byte(
+			`{"Issues":[{"FromLinter":"errcheck","Text":"unchecked","Pos":{"Filename":"internal/a/a.go","Line":5,"Column":2}}]}`,
+		)},
+		"go list -e -f {{.Dir}}\t{{.ImportPath}} ./...": {Stdout: []byte("/project/internal/a\texample.com/m/internal/a\n")},
+	}}
+	e := &Engine{
+		Config:       &config.Config{Check: config.CheckConfig{Steps: []string{"lint"}}},
+		Runner:       ar,
+		Workspace:    "/project",
+		RepoRoot:     "/project",
+		ToolResolver: func(name string) []string { return []string{"/stub/" + name} },
+	}
+
+	result, err := e.Check(context.Background(), nil, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	issues := result.RunResult.LintIssues
+	if len(issues) != 1 || issues[0].Package != "example.com/m/internal/a" || issues[0].File != "internal/a/a.go" {
+		t.Errorf("LintIssues = %+v, want one in example.com/m/internal/a at internal/a/a.go", issues)
 	}
 }

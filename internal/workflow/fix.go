@@ -3,7 +3,6 @@ package workflow
 import (
 	"context"
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/deixis/governor/internal/report"
@@ -33,7 +32,7 @@ func (e *Engine) RunFixPhase(ctx context.Context, pkgs []string, fix bool) (*Fix
 		result.AutoFixes += e.runGofumptFix(ctx, files)
 		result.AutoFixes += e.runLintFix(ctx, pkgs)
 	} else {
-		issues, err := e.runGofumptCheck(ctx, files)
+		issues, err := e.runGofumptCheck(ctx, pkgs, files)
 		if err != nil {
 			return nil, err
 		}
@@ -60,7 +59,7 @@ func (e *Engine) runGofumptFix(ctx context.Context, files []string) int {
 // as FormatIssues. gofumpt -l exits 0 whether or not it lists files, so a
 // non-zero exit is a tool failure (a version-manager shim with no version
 // set, say) and its output must not be read as a file list.
-func (e *Engine) runGofumptCheck(ctx context.Context, files []string) ([]report.FormatIssue, error) {
+func (e *Engine) runGofumptCheck(ctx context.Context, pkgs, files []string) ([]report.FormatIssue, error) {
 	argv := e.resolveTool("gofumpt")
 	if argv == nil {
 		return nil, nil
@@ -77,18 +76,18 @@ func (e *Engine) runGofumptCheck(ctx context.Context, files []string) ([]report.
 		return nil, fmt.Errorf("gofumpt failed (exit %d): %s", res.ExitCode, out)
 	}
 
-	var issues []report.FormatIssue
-	for file := range strings.SplitSeq(strings.TrimSpace(string(res.Stdout)), "\n") {
-		file = strings.TrimSpace(file)
-		if file == "" {
-			continue
-		}
-		if rel, err := filepath.Rel(e.Workspace, file); err == nil && !strings.HasPrefix(rel, "..") {
-			file = rel
-		}
+	unformatted := nonEmptyLines(res.Stdout)
+	if len(unformatted) == 0 {
+		return nil, nil
+	}
+	dirs := e.packageDirs(ctx, pkgs)
+	issues := make([]report.FormatIssue, 0, len(unformatted))
+	for _, file := range unformatted {
+		pkg, rel := e.locate(dirs, file)
 		issues = append(issues, report.FormatIssue{
-			File:    file,
-			Message: fmt.Sprintf("file not formatted: %s", file),
+			Package: pkg,
+			File:    rel,
+			Message: fmt.Sprintf("file not formatted: %s", rel),
 		})
 	}
 	return issues, nil

@@ -160,6 +160,16 @@ type Diagnostic struct {
 	Output  string // full test output (test failures only)
 }
 
+// NoPackage labels diagnostics outside any workspace package in tool
+// output. BySymbol accepts it in place of an import path.
+const NoPackage = "(no package)"
+
+// All returns every diagnostic in the run, including those without a
+// package.
+func All(result *RunResult) []Diagnostic {
+	return toDiagnostics(result)
+}
+
 // ByPackage returns all diagnostics for a given package import path.
 func ByPackage(result *RunResult, pkg string) []Diagnostic {
 	var out []Diagnostic
@@ -176,6 +186,9 @@ func ByPackage(result *RunResult, pkg string) []Diagnostic {
 // package.Symbol (e.g. "example.com/foo.TestAdd"). Otherwise it is
 // treated as a bare package path and returns all diagnostics.
 func BySymbol(result *RunResult, sym string) []Diagnostic {
+	if sym == NoPackage {
+		return ByPackage(result, "")
+	}
 	pkg, name := splitSymbol(sym)
 	if name == "" {
 		return ByPackage(result, pkg)

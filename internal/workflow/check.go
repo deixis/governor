@@ -1,6 +1,7 @@
 package workflow
 
 import (
+	"cmp"
 	"context"
 	"errors"
 	"fmt"
@@ -104,6 +105,7 @@ func (e *Engine) Check(ctx context.Context, packages []string, fix bool) (*Check
 				failedIdx = i
 				for _, issue := range summary.Issues {
 					rr.LintIssues = append(rr.LintIssues, report.LintIssue{
+						Package: issue.Package,
 						File:    issue.File,
 						Line:    issue.Line,
 						Col:     issue.Column,
@@ -185,14 +187,10 @@ func FormatFailureSymbols(rr *report.RunResult) []string {
 
 	lintPkgs := make(map[string]int)
 	for _, li := range rr.LintIssues {
-		pkg := li.Package
-		if pkg == "" {
-			pkg = derivePackageFromFile(li.File)
-		}
-		lintPkgs[pkg]++
+		lintPkgs[li.Package]++
 	}
 	for pkg, count := range lintPkgs {
-		out = append(out, fmt.Sprintf("%s — %d lint issues", pkg, count))
+		out = append(out, fmt.Sprintf("%s — %d lint issues", cmp.Or(pkg, report.NoPackage), count))
 	}
 
 	scPkgs := make(map[string]int)
@@ -200,7 +198,7 @@ func FormatFailureSymbols(rr *report.RunResult) []string {
 		scPkgs[si.Package]++
 	}
 	for pkg, count := range scPkgs {
-		out = append(out, fmt.Sprintf("%s — %d staticcheck issues", pkg, count))
+		out = append(out, fmt.Sprintf("%s — %d staticcheck issues", cmp.Or(pkg, report.NoPackage), count))
 	}
 
 	return out

@@ -85,7 +85,7 @@ func formatCheck(runID string, rr *report.RunResult, results []workflow.StepResu
 		if failed.Status == "unavailable" {
 			fmt.Fprintf(&b, "Action: %s is required but not installed. Install it and re-run gov_check.\n", failed.Name)
 		} else {
-			fmt.Fprintf(&b, "Inspect with gov_inspect(run_id=%q, symbol=\"<package or package.Symbol>\").\n", runID)
+			fmt.Fprintf(&b, "Inspect with gov_inspect(run_id=%q, symbol=\"<package or package.Symbol>\"), or omit symbol for all.\n", runID)
 		}
 	} else {
 		fmt.Fprintln(&b, "All check steps passed.")

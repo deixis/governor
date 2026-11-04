@@ -54,7 +54,19 @@ func (e *Engine) runStaticcheck(ctx context.Context, packages []string) (*Static
 		return nil, fmt.Errorf("executing staticcheck: %w", err)
 	}
 
-	return parseStaticcheckOutput(result.Stdout), nil
+	s := parseStaticcheckOutput(result.Stdout)
+	if result.ExitCode != 0 && len(s.Issues) == 0 {
+		// A failing run with no parsed issue means staticcheck itself
+		// failed (bad flags, version-manager shim), not a clean run.
+		return nil, fmt.Errorf("staticcheck failed (exit %d): %s", result.ExitCode, strings.TrimSpace(string(result.Stderr)+string(result.Stdout)))
+	}
+	if len(s.Issues) > 0 {
+		dirs := e.packageDirs(ctx, pkgs)
+		for i := range s.Issues {
+			s.Issues[i].Package, s.Issues[i].File = e.locate(dirs, s.Issues[i].File)
+		}
+	}
+	return s, nil
 }
 
 // staticcheckEvent represents a single JSON line from `staticcheck -f json`.
@@ -88,10 +100,7 @@ func parseStaticcheckOutput(data []byte) *StaticcheckResult {
 			continue
 		}
 
-		pkg := derivePackageFromFile(ev.Location.File)
-
 		s.Issues = append(s.Issues, report.StaticIssue{
-			Package:  pkg,
 			File:     ev.Location.File,
 			Line:     ev.Location.Line,
 			Col:      ev.Location.Column,
