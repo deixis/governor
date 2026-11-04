@@ -68,6 +68,11 @@ func (s *snapshot) resolveTarget(target, newName string) (fileTarget, error) {
 		return fileTarget{pkg: pkgs[0], file: abs}, nil
 	}
 	if _, err := os.Stat(abs); err == nil {
+		if mod := s.mainModule(); mod != nil {
+			if nested := nestedModule(canonical(mod.Dir), canonical(filepath.Dir(abs))); nested != "" {
+				return fileTarget{}, fmt.Errorf("file %s is in the module at %s, outside the workspace", relPath(s.root, abs), relPath(s.root, nested))
+			}
+		}
 		return fileTarget{}, fmt.Errorf("file %s exists but is not part of any loaded package", relPath(s.root, abs))
 	}
 	if pkg == nil {
@@ -123,11 +128,15 @@ func (s *snapshot) newPackage(dir string) (*packages.Package, error) {
 	if mod == nil || mod.Dir == "" {
 		return nil, fmt.Errorf("directory %s holds no loaded package", dir)
 	}
-	rel, err := filepath.Rel(canonical(mod.Dir), dir)
+	modDir := canonical(mod.Dir)
+	rel, err := filepath.Rel(modDir, dir)
 	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
 		return nil, fmt.Errorf("directory %s is outside the main module %s", dir, mod.Path)
 	}
-	for _, el := range strings.Split(filepath.ToSlash(rel), "/") {
+	if nested := nestedModule(modDir, dir); nested != "" {
+		return nil, fmt.Errorf("directory %s is in the module at %s, outside the workspace", relPath(s.root, dir), relPath(s.root, nested))
+	}
+	for el := range strings.SplitSeq(filepath.ToSlash(rel), "/") {
 		if el == "testdata" || el == "vendor" || strings.HasPrefix(el, ".") || strings.HasPrefix(el, "_") {
 			return nil, fmt.Errorf("directory %s cannot hold a package (%s)", dir, el)
 		}
@@ -143,6 +152,17 @@ func (s *snapshot) newPackage(dir string) (*packages.Package, error) {
 		Imports: map[string]*packages.Package{},
 		Module:  mod,
 	}, nil
+}
+
+// nestedModule returns the directory of a go.mod between dir (included)
+// and root (excluded), or "": a package there belongs to another module.
+func nestedModule(root, dir string) string {
+	for d := dir; d != root && strings.HasPrefix(d, root); d = filepath.Dir(d) {
+		if _, err := os.Stat(filepath.Join(d, "go.mod")); err == nil {
+			return d
+		}
+	}
+	return ""
 }
 
 // fileNameFor derives a file name from the first declaration: snake case
@@ -162,11 +182,16 @@ func fileNameFor(decls []ast.Decl) string {
 	return snakeCase(name) + ".go"
 }
 
+// snakeCase lowers a Go name with underscores at word boundaries. A run
+// of capitals is one word: HTTPClient is http_client, SG is sg.
 func snakeCase(name string) string {
+	rs := []rune(name)
 	var b strings.Builder
-	for i, r := range name {
+	for i, r := range rs {
 		if unicode.IsUpper(r) {
-			if i > 0 {
+			prevLower := i > 0 && !unicode.IsUpper(rs[i-1]) && rs[i-1] != '_'
+			nextLower := i+1 < len(rs) && unicode.IsLower(rs[i+1])
+			if i > 0 && (prevLower || (nextLower && unicode.IsUpper(rs[i-1]))) {
 				b.WriteByte('_')
 			}
 			r = unicode.ToLower(r)

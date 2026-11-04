@@ -91,6 +91,12 @@ func Use() string { return foo.Exported() }
 // Tag reads a tag.
 func Tag(t foo.Tagged) string { return t.Tag }
 `,
+		"sub/go.mod": "module example.com/m/sub\n\ngo 1.25\n",
+		"sub/sub.go": `package sub
+
+// S is in a nested module.
+type S struct{}
+`,
 		"baz/baz.go": `package baz
 
 // Nothing is here.
@@ -432,6 +438,18 @@ func TestPlanAdd(t *testing.T) {
 	wantAll(t, text, "nope/a.go (new package)")
 	if _, err := NewWorkspace(dir).Plan(context.Background(), Request{Op: "add", Target: "other.org/x", Source: "const A = 1"}); err == nil {
 		t.Error("expected error for a package outside the module")
+	}
+	// A nested module is not a new package of this one.
+	for _, target := range []string{"example.com/m/sub", filepath.Join(dir, "sub", "x.go"), filepath.Join(dir, "sub", "sub.go"), filepath.Join(dir, "sub", "deeper", "x.go")} {
+		_, err := NewWorkspace(dir).Plan(context.Background(), Request{Op: "add", Target: target, Source: "const A = 1"})
+		if err == nil || !strings.Contains(err.Error(), "module at sub") {
+			t.Errorf("target %s: err = %v, want nested module error", target, err)
+		}
+	}
+	for name, want := range map[string]string{"SG": "sg", "HTTPClient": "http_client", "PushWatcherConfig": "push_watcher_config", "thing": "thing", "ID": "id", "UserID": "user_id"} {
+		if got := snakeCase(name); got != want {
+			t.Errorf("snakeCase(%s) = %s, want %s", name, got, want)
+		}
 	}
 	if _, err := NewWorkspace(dir).Plan(context.Background(), Request{Op: "add", Target: "example.com/m/foo", Source: "func ("}); err == nil {
 		t.Error("expected parse error")
