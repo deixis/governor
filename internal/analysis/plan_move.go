@@ -3,7 +3,6 @@ package analysis
 import (
 	"fmt"
 	"go/ast"
-	"go/token"
 	"go/types"
 	"maps"
 	"slices"
@@ -120,16 +119,27 @@ func (s *snapshot) planMove(req Request) (*Report, error) {
 	r.followUp(title, leftBehind)
 
 	// Destination collisions, moved and pulled alike: analyseMove added
-	// the pulled declarations to the set.
+	// the pulled declarations to the set. A declaration exported by
+	// decision lands under its new name.
 	destScope := dest.Types.Scope()
+	landed := make(map[string]decl)
 	for _, d := range set.decls {
 		if memberOwner(d.obj) != nil {
 			continue
 		}
-		if obj := destScope.Lookup(d.obj.Name()); obj != nil {
+		name := d.obj.Name()
+		if slices.Contains(ma.exported, d.obj) {
+			name = exportedName(name)
+		}
+		if obj := destScope.Lookup(name); obj != nil {
 			r.block(fmt.Sprintf("%s already exists in %s at %s", d.label(), dest.PkgPath, s.position(s.root, obj.Pos())),
 				"rename one of them first, or pick another destination")
 		}
+		if other, ok := landed[name]; ok {
+			r.block(fmt.Sprintf("%s and %s would both be %s in %s", d.label(), other.label(), name, dest.PkgPath),
+				"rename one of them first, or leave out the export decision")
+		}
+		landed[name] = d
 	}
 
 	// Shared helpers: the agent decides.
@@ -371,7 +381,7 @@ func (s *snapshot) analyseMove(set *removalSet, decisions Decisions, force bool)
 		// A shared helper whose other users were pulled since is pulled
 		// too.
 		settled := true
-		for obj := range ma.shared {
+		for _, obj := range sortedObjects(maps.Keys(ma.shared)) {
 			if others := s.usersOutside(obj, set); len(others) == 0 {
 				delete(ma.shared, obj)
 				pullObj(obj, nil)
@@ -564,5 +574,3 @@ func toSet(names []string) map[string]bool {
 	}
 	return m
 }
-
-var _ token.Pos

@@ -75,7 +75,7 @@ func (s *snapshot) planReplace(ctx context.Context, req Request) (*Report, error
 			// Inside a group the spec alone is spliced, not the keyword.
 			text := src.body
 			if g, ok := decls[0].(*ast.GenDecl); ok && old.gen != nil && len(old.gen.Specs) > 1 && len(g.Specs) == 1 {
-				text = src.nodeText(g.Specs[0])
+				text = src.lineText(g.Specs[0])
 			}
 			ed := splice(orig, old.pkg.Name, imports, text, s.fset.Position(start).Offset, s.fset.Position(end).Offset)
 			for _, e := range s.checkSource(ctx, old.pkg, s.fset.Position(start).Filename, ed) {
@@ -259,12 +259,17 @@ func typeKind(t ast.Expr) string {
 }
 
 // memberUseSites lists where fields or methods of tn with the given names
-// are used, outside the set's own declarations.
+// are used, outside the set's own declarations. An embedded field may be
+// named by its type, as members keys it: *pkg.Base is field Base.
 func (s *snapshot) memberUseSites(set *removalSet, tn *types.TypeName, names []string) []string {
 	if len(names) == 0 {
 		return nil
 	}
-	wanted := toSet(names)
+	wanted := make(map[string]bool)
+	for _, n := range names {
+		n, _, _ = strings.Cut(strings.TrimPrefix(n, "*"), "[")
+		wanted[n[strings.LastIndex(n, ".")+1:]] = true
+	}
 	targets := make(map[string]bool)
 	if st, ok := tn.Type().Underlying().(*types.Struct); ok {
 		for f := range st.Fields() {

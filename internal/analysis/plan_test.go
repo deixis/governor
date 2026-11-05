@@ -479,6 +479,17 @@ func TestPlanCompiles(t *testing.T) {
 	wantVerdict(t, r, text, VerdictOK)
 	wantAll(t, text, "imports os")
 
+	// Lines count from the source as given, import block and package
+	// clause included.
+	r, text = plan(t, dir, Request{Op: "add", File: fooGo, Source: "package foo\n\nimport \"os\"\n\nfunc X() { _ = os.Args; nope() }"})
+	wantVerdict(t, r, text, VerdictBlocked)
+	wantAll(t, text, "line 5: undefined: nope")
+
+	// A directory whose name is not an identifier cannot be a package.
+	if _, err := NewWorkspace(dir).Plan(context.Background(), Request{Op: "add", Target: "example.com/m/go", Source: "func X() {}"}); err == nil || !strings.Contains(err.Error(), "not a valid package name") {
+		t.Errorf("keyword directory: err = %v", err)
+	}
+
 	r, text = plan(t, dir, Request{Op: "add", File: fooGo, Source: "func fmt() {}"})
 	wantVerdict(t, r, text, VerdictBlocked)
 	wantAll(t, text, "already declared through import")
@@ -514,6 +525,29 @@ func TestPlanCompiles(t *testing.T) {
 	// A test file is checked with the test variant.
 	r, text = plan(t, dir, Request{Op: "add", Target: filepath.Join(dir, "foo", "foo_test.go"), Source: "import \"testing\"\n\nfunc TestX(t *testing.T) { _ = greet(\"a\") }"})
 	wantVerdict(t, r, text, VerdictOK)
+}
+
+// TestPlanCompilesNewImport covers source importing a package the target
+// reaches only through a dependency: its types must be the ones the
+// dependency refers to.
+func TestPlanCompilesNewImport(t *testing.T) {
+	dir := writeModule(t, map[string]string{
+		"go.mod": "module example.com/h\n\ngo 1.25\n",
+		"h/h.go": `package h
+
+import "net/http"
+
+// Path returns the request path.
+func Path(r *http.Request) string { return r.URL.Path }
+`,
+	})
+	hGo := filepath.Join(dir, "h", "h.go")
+	r, text := plan(t, dir, Request{Op: "add", File: hGo, Source: "import \"net/url\"\n\n// URL returns the request URL.\nfunc URL(r *http.Request) *url.URL { return r.URL }"})
+	wantVerdict(t, r, text, VerdictOK)
+
+	r, text = plan(t, dir, Request{Op: "add", File: hGo, Source: "import \"net/url\"\n\nfunc URL(r *http.Request) *url.URL { return nope(r) }"})
+	wantVerdict(t, r, text, VerdictBlocked)
+	wantAll(t, text, "line 3: undefined: nope")
 }
 
 // TestPlanShape covers kind changes, member use sites and lost interface

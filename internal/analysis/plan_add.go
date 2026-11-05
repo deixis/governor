@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"go/ast"
+	"go/token"
 	"go/types"
 	"os"
 	"path/filepath"
@@ -130,19 +131,32 @@ func (s *snapshot) newPackage(dir string) (*packages.Package, error) {
 	}
 	modDir := canonical(mod.Dir)
 	rel, err := filepath.Rel(modDir, dir)
-	if err != nil || rel == "." || strings.HasPrefix(rel, "..") {
+	if err != nil || strings.HasPrefix(rel, "..") {
 		return nil, fmt.Errorf("directory %s is outside the main module %s", dir, mod.Path)
 	}
-	if nested := nestedModule(modDir, dir); nested != "" {
-		return nil, fmt.Errorf("directory %s is in the module at %s, outside the workspace", relPath(s.root, dir), relPath(s.root, nested))
+	path := mod.Path
+	if rel != "." {
+		if nested := nestedModule(modDir, dir); nested != "" {
+			return nil, fmt.Errorf("directory %s is in the module at %s, outside the workspace", relPath(s.root, dir), relPath(s.root, nested))
+		}
+		for el := range strings.SplitSeq(filepath.ToSlash(rel), "/") {
+			if el == "testdata" || el == "vendor" || strings.HasPrefix(el, ".") || strings.HasPrefix(el, "_") {
+				return nil, fmt.Errorf("directory %s cannot hold a package (%s)", dir, el)
+			}
+		}
+		path += "/" + filepath.ToSlash(rel)
 	}
-	for el := range strings.SplitSeq(filepath.ToSlash(rel), "/") {
-		if el == "testdata" || el == "vendor" || strings.HasPrefix(el, ".") || strings.HasPrefix(el, "_") {
-			return nil, fmt.Errorf("directory %s cannot hold a package (%s)", dir, el)
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, e := range entries {
+			if !e.IsDir() && strings.HasSuffix(e.Name(), ".go") {
+				return nil, fmt.Errorf("directory %s holds Go files no loaded package covers (%s); check its build constraints", relPath(s.root, dir), e.Name())
+			}
 		}
 	}
-	path := mod.Path + "/" + filepath.ToSlash(rel)
-	name := strings.NewReplacer("-", "_", ".", "_").Replace(filepath.Base(dir))
+	name := strings.NewReplacer("-", "_", ".", "_").Replace(path[strings.LastIndex(path, "/")+1:])
+	if !token.IsIdentifier(name) {
+		return nil, fmt.Errorf("directory %s: %q is not a valid package name", relPath(s.root, dir), name)
+	}
 	return &packages.Package{
 		ID:      path,
 		PkgPath: path,

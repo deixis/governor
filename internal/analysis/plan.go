@@ -8,7 +8,6 @@ import (
 	"go/scanner"
 	"go/token"
 	"go/types"
-	"regexp"
 	"slices"
 	"sort"
 	"strconv"
@@ -428,12 +427,13 @@ func firstN[T any](in []T, n int) []T {
 
 // parsed is declaration text taken apart: the declarations, the import
 // paths of any leading import block, and the text with that block and
-// any package clause removed.
+// any package clause blanked. Blanking keeps line numbers: line n of
+// body is line n of the source as given.
 type parsed struct {
 	decls   []ast.Decl
 	imports []string
 	body    string
-	// text is the source as parsed, package clause removed, and fset
+	// text is the source as parsed, package clause blanked, and fset
 	// positions it with offsets shifted by prefixLen.
 	text string
 	fset *token.FileSet
@@ -449,13 +449,31 @@ func (p *parsed) nodeText(n ast.Node) string {
 	return p.text[start:end]
 }
 
-var packageClause = regexp.MustCompile(`(?m)^package\s+\w+[^\n]*\n?`)
+// lineText returns the source text of a node with the blank lines that
+// put it on its own line of the source.
+func (p *parsed) lineText(n ast.Node) string {
+	line := p.fset.Position(n.Pos()).Line - strings.Count("package p\n\n", "\n")
+	return strings.Repeat("\n", line-1) + p.nodeText(n)
+}
 
-// parseSource parses declaration text. A package clause is dropped, and
+// blankPackageClause replaces a leading package clause with spaces, so
+// the rest of the text keeps its offsets and line numbers.
+func blankPackageClause(src string) string {
+	fset := token.NewFileSet()
+	f, err := parser.ParseFile(fset, "", src, parser.PackageClauseOnly)
+	if err != nil || f.Name == nil || !f.Package.IsValid() {
+		return src
+	}
+	start := fset.Position(f.Package).Offset
+	end := fset.Position(f.Name.End()).Offset
+	return src[:start] + strings.Repeat(" ", end-start) + src[end:]
+}
+
+// parseSource parses declaration text. A package clause is blanked, and
 // leading import declarations are returned separately as import paths.
 // Parse errors carry the line numbers of the text as given.
 func parseSource(src string) (*parsed, error) {
-	src = packageClause.ReplaceAllString(src, "")
+	src = blankPackageClause(src)
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "source.go", "package p\n\n"+src, parser.ParseComments|parser.SkipObjectResolution)
 	if err != nil {
@@ -488,9 +506,9 @@ func parseSource(src string) (*parsed, error) {
 	for _, cut := range slices.Backward(cuts) {
 		start := fset.Position(cut.start).Offset - prefixLen
 		end := fset.Position(cut.end).Offset - prefixLen
-		body = body[:start] + body[end:]
+		body = body[:start] + strings.Repeat("\n", strings.Count(body[start:end], "\n")) + body[end:]
 	}
-	out.body = strings.TrimLeft(body, "\n")
+	out.body = body
 	return out, nil
 }
 

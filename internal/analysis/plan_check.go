@@ -144,39 +144,32 @@ func (s *snapshot) checkSource(ctx context.Context, pkg *packages.Package, path 
 		return nil
 	}
 
-	var found []string
-	seen := make(map[string]bool)
+	// An import the package does not have yet would come from a separate
+	// load, whose types are distinct from those the package's own
+	// dependencies refer to: url.URL from the load is not the url.URL
+	// http.Request holds. The go tool checks such a file against one
+	// consistent set of dependencies instead.
+	for _, imp := range newFile.Imports {
+		p, err := strconv.Unquote(imp.Path.Value)
+		if err != nil || p == "C" || p == "unsafe" {
+			continue
+		}
+		if dep := pkg.Imports[p]; dep == nil || dep.Types == nil || !dep.Types.Complete() {
+			if found, ok := s.checkWithOverlay(ctx, pkg, path, ed); ok {
+				return found
+			}
+			break
+		}
+	}
+
+	rec := newErrorRecorder(path, ed)
 	cfg := types.Config{
 		Importer:    &snapshotImporter{s: s, ctx: ctx, pkg: pkg},
 		Sizes:       pkg.TypesSizes,
 		FakeImportC: true,
 		Error: func(err error) {
-			te, ok := err.(types.Error)
-			if !ok {
-				return
-			}
-			p := fset.Position(te.Pos)
-			if p.Filename != path && canonical(p.Filename) != want {
-				return
-			}
-			off := token.Pos(p.Offset)
-			inNew := false
-			for _, r := range ed.ranges {
-				if off >= r.start && off < r.end {
-					inNew = true
-				}
-			}
-			if !inNew {
-				return
-			}
-			msg := strings.Join(strings.Fields(te.Msg), " ")
-			line := fmt.Sprintf("line %d: %s", p.Line-ed.srcLine+1, msg)
-			if p.Line < ed.srcLine {
-				line = "import: " + msg
-			}
-			if !seen[line] {
-				seen[line] = true
-				found = append(found, line)
+			if te, ok := err.(types.Error); ok {
+				rec.add(fset.Position(te.Pos), te.Msg)
 			}
 		},
 	}
@@ -184,7 +177,97 @@ func (s *snapshot) checkSource(ctx context.Context, pkg *packages.Package, path 
 		cfg.GoVersion = "go" + pkg.Module.GoVersion
 	}
 	_, _ = cfg.Check(pkg.PkgPath, fset, files, nil)
-	return firstN(found, 10)
+	return firstN(rec.found, 10)
+}
+
+// checkWithOverlay loads pkg through the go tool with path holding ed,
+// and returns the errors in the new text. ok is false when the load
+// itself failed; the caller falls back to the in-memory check.
+func (s *snapshot) checkWithOverlay(ctx context.Context, pkg *packages.Package, path string, ed edited) (found []string, ok bool) {
+	fset := token.NewFileSet()
+	cfg := &packages.Config{
+		Context: ctx,
+		Mode:    loadMode,
+		Dir:     s.root,
+		Fset:    fset,
+		Tests:   strings.HasSuffix(path, "_test.go"),
+		Overlay: map[string][]byte{path: ed.content},
+	}
+	pkgs, err := packages.Load(cfg, pkg.PkgPath)
+	if err != nil {
+		return nil, false
+	}
+	var target *packages.Package
+	want := canonical(path)
+	for _, p := range pkgs {
+		for _, f := range p.CompiledGoFiles {
+			if f == path || canonical(f) == want {
+				target = p
+			}
+		}
+		if target != nil && target.ID != target.PkgPath {
+			// The in-package test variant compiles both kinds of file.
+			break
+		}
+	}
+	if target == nil {
+		// The go tool left the file out: a list error says why, for
+		// instance a module go.mod does not provide.
+		for _, p := range pkgs {
+			for _, e := range p.Errors {
+				found = append(found, "import: "+strings.Join(strings.Fields(e.Msg), " "))
+			}
+		}
+		return firstN(found, 10), len(found) > 0
+	}
+	rec := newErrorRecorder(path, ed)
+	for _, te := range target.TypeErrors {
+		rec.add(fset.Position(te.Pos), te.Msg)
+	}
+	for _, e := range target.Errors {
+		if e.Kind == packages.ListError {
+			rec.found = append(rec.found, "import: "+strings.Join(strings.Fields(e.Msg), " "))
+		}
+	}
+	return firstN(rec.found, 10), true
+}
+
+// errorRecorder keeps the errors that sit in the new text of one file,
+// with line numbers relative to the declaration source.
+type errorRecorder struct {
+	path, want string
+	ed         edited
+	found      []string
+	seen       map[string]bool
+}
+
+func newErrorRecorder(path string, ed edited) *errorRecorder {
+	return &errorRecorder{path: path, want: canonical(path), ed: ed, seen: make(map[string]bool)}
+}
+
+func (r *errorRecorder) add(p token.Position, msg string) {
+	if p.Filename != r.path && canonical(p.Filename) != r.want {
+		return
+	}
+	off := token.Pos(p.Offset)
+	inNew := false
+	for _, rg := range r.ed.ranges {
+		if off >= rg.start && off < rg.end {
+			inNew = true
+		}
+	}
+	if !inNew {
+		return
+	}
+	msg = strings.Join(strings.Fields(msg), " ")
+	line := fmt.Sprintf("line %d: %s", p.Line-r.ed.srcLine+1, msg)
+	if p.Line < r.ed.srcLine {
+		line = "import: " + msg
+	}
+	if !r.seen[line] {
+		r.seen[line] = true
+		r.found = append(r.found, line)
+	}
 }
 
 // variantForFile picks the package variant that compiles path: the test
