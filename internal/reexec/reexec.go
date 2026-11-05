@@ -76,7 +76,10 @@ func decide(p probe) action {
 	if version.Compare(p.goVersion, p.self) <= 0 {
 		return actionInProcess
 	}
-	if p.modVersion == "" || p.modVersion == "(devel)" {
+	// A build from a modified checkout carries "+dirty": go install at
+	// that version fails, and at the clean version it would build the
+	// published commit, not the local changes.
+	if p.modVersion == "" || p.modVersion == "(devel)" || strings.Contains(p.modVersion, "+dirty") {
 		return actionInProcess
 	}
 	return actionCachedBuild

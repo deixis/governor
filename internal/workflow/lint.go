@@ -4,6 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -50,12 +53,12 @@ func (e *Engine) runLint(ctx context.Context, packages []string) (*LintSummary, 
 		return nil, err
 	}
 
-	argv = append(argv, "run", "--out-format", "json")
+	argv = slices.Concat(argv, []string{"run"}, e.lintJSONOutputFlags(ctx))
 	if e.Config.Lint.Config != "" {
 		argv = append(argv, "--config", e.Config.Lint.Config)
 	}
 	argv = append(argv, e.Config.Lint.Args...)
-	argv = append(argv, pkgs...)
+	argv = append(argv, e.dirPatterns(ctx, pkgs)...)
 
 	result, err := e.Runner.Run(ctx, argv, "")
 	if err != nil {
@@ -75,6 +78,93 @@ func (e *Engine) runLint(ctx context.Context, packages []string) (*LintSummary, 
 		}
 	}
 	return summary, nil
+}
+
+// lintVersion matches the version in `golangci-lint --version` output,
+// "golangci-lint has version 2.14.0 built with ..." in v1 and v2 alike.
+var lintVersion = regexp.MustCompile(`version v?(\d+)\.`)
+
+// lintJSONOutputFlags selects the flags that make golangci-lint print JSON
+// on stdout. v2 removed --out-format in favour of --output.json.path. Only
+// a version that reads as v1 gets the old flag: v2 is current, so a probe
+// that fails or prints something else gets the v2 flag.
+func (e *Engine) lintJSONOutputFlags(ctx context.Context) []string {
+	v2 := []string{"--output.json.path", "stdout"}
+	result, err := e.Runner.Run(ctx, slices.Concat(e.resolveTool("golangci-lint"), []string{"--version"}), "")
+	if err != nil || result.ExitCode != 0 {
+		return v2
+	}
+	m := lintVersion.FindSubmatch(append(result.Stdout, result.Stderr...))
+	if m != nil && string(m[1]) == "1" {
+		return []string{"--out-format", "json"}
+	}
+	return v2
+}
+
+// dirPatterns rewrites import-path patterns of workspace modules as
+// directory patterns relative to the workspace. golangci-lint v2 takes
+// every argument as a directory, so example.com/m/a/... becomes ./a/...
+// Relative patterns and paths outside the workspace modules pass through.
+func (e *Engine) dirPatterns(ctx context.Context, pkgs []string) []string {
+	var needed bool
+	for _, p := range pkgs {
+		if !isRelativePattern(p) {
+			needed = true
+		}
+	}
+	if !needed {
+		return pkgs
+	}
+	res, err := e.Runner.Run(ctx, []string{"go", "list", "-m", "-f", "{{.Path}}\t{{.Dir}}"}, "")
+	if err != nil || res.ExitCode != 0 {
+		return pkgs
+	}
+	var mods []lintModule
+	for _, line := range nonEmptyLines(res.Stdout) {
+		if path, dir, ok := strings.Cut(line, "\t"); ok && dir != "" {
+			mods = append(mods, lintModule{path, dir})
+		}
+	}
+	// Longest module path first: a nested module wins over its parent.
+	slices.SortFunc(mods, func(a, b lintModule) int { return len(b.path) - len(a.path) })
+
+	out := make([]string, 0, len(pkgs))
+	for _, p := range pkgs {
+		out = append(out, e.dirPattern(p, mods))
+	}
+	return out
+}
+
+type lintModule struct{ path, dir string }
+
+func (e *Engine) dirPattern(p string, mods []lintModule) string {
+	if isRelativePattern(p) {
+		return p
+	}
+	base, recursive := strings.CutSuffix(p, "/...")
+	for _, m := range mods {
+		rest, ok := strings.CutPrefix(base, m.path)
+		if !ok || (rest != "" && rest[0] != '/') {
+			continue
+		}
+		rel, err := filepath.Rel(e.Workspace, filepath.Join(m.dir, filepath.FromSlash(rest)))
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return p
+		}
+		pattern := "./" + filepath.ToSlash(rel)
+		if rel == "." {
+			pattern = "."
+		}
+		if recursive {
+			pattern = strings.TrimSuffix(pattern, "/.") + "/..."
+		}
+		return pattern
+	}
+	return p
+}
+
+func isRelativePattern(p string) bool {
+	return p == "." || p == ".." || strings.HasPrefix(p, "./") || strings.HasPrefix(p, "../")
 }
 
 // golangciLintOutput is the top-level JSON output from golangci-lint.

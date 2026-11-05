@@ -63,7 +63,7 @@ Type-checking in process ties governor to the Go version that built it. A worksp
 2. The workspace toolchain is not newer than the one that built the binary: runs in process.
 3. Otherwise governor installs its own version under the workspace toolchain into the user cache (`~/Library/Caches/governor/<go version>/<governor version>/` on macOS, `~/.cache/governor/...` on Linux) and runs that. Only the first run per toolchain builds.
 
-Source builds without a module version skip step 3. Set `GOVERNOR_NO_REEXEC=1` to disable the handover. Editor and agent configurations keep calling `governor` on `PATH`; nothing per project is required.
+Source builds without a module version skip step 3, and so does a build from a modified checkout (version ending in `+dirty`). A clean local build of an unpublished commit cannot be installed by version and falls back to running in process. To test local changes against a workspace on a newer toolchain, build with that toolchain: `GOTOOLCHAIN=go1.27.3 go install ./cmd/governor`. Set `GOVERNOR_NO_REEXEC=1` to disable the handover. Editor and agent configurations keep calling `governor` on `PATH`; nothing per project is required.
 
 ## CLI usage
 
