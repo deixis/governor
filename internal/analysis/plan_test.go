@@ -57,6 +57,24 @@ type Store interface {
 
 // Pair shares one spec.
 var first, second = 1, 2
+
+var (
+	alpha = 1
+	beta  = alpha + 1
+)
+
+// Chain uses outer and inner; outer alone uses inner.
+type Chain struct{}
+
+// Run runs.
+func (Chain) Run() int { return outer() + inner() }
+
+func outer() int { return inner() }
+
+func inner() int { return beta }
+
+// Tagged has a field read elsewhere.
+type Tagged struct{ Tag string }
 `,
 		"foo/extra.go": `package foo
 
@@ -69,6 +87,15 @@ import "example.com/m/foo"
 
 // Use depends on foo.
 func Use() string { return foo.Exported() }
+
+// Tag reads a tag.
+func Tag(t foo.Tagged) string { return t.Tag }
+`,
+		"sub/go.mod": "module example.com/m/sub\n\ngo 1.25\n",
+		"sub/sub.go": `package sub
+
+// S is in a nested module.
+type S struct{}
 `,
 		"baz/baz.go": `package baz
 
@@ -180,8 +207,22 @@ func TestPlanMove(t *testing.T) {
 	if _, err := ws.Plan(context.Background(), Request{Op: "move", File: fooGo, Symbol: "Thing.Name", Target: "example.com/m/baz"}); err == nil {
 		t.Error("expected error moving a field")
 	}
-	if _, err := ws.Plan(context.Background(), Request{Op: "move", File: fooGo, Symbol: "Thing", Target: "example.com/m/nope"}); err == nil {
-		t.Error("expected error for unknown destination")
+	// An import path below the module with no package yet is a new
+	// package; one outside the module is an error.
+	r, text = plan(t, dir, Request{Op: "move", File: fooGo, Symbol: "Widget", Target: "example.com/m/nope"})
+	wantVerdict(t, r, text, VerdictOK)
+	wantAll(t, text, "nope/widget.go (new package)")
+	if _, err := ws.Plan(context.Background(), Request{Op: "move", File: fooGo, Symbol: "Thing", Target: "other.org/x"}); err == nil {
+		t.Error("expected error for a destination outside the module")
+	}
+	if _, err := ws.Plan(context.Background(), Request{Op: "move", File: fooGo, Symbol: "Thing.Hello", Target: "example.com/m/baz"}); err == nil {
+		t.Error("expected error moving a method")
+	}
+	if _, err := ws.Plan(context.Background(), Request{Op: "move", File: fooGo, Symbol: "Widget", Target: filepath.Join(dir, "baz", "x_test.go")}); err == nil {
+		t.Error("expected error moving into a test file")
+	}
+	if _, err := ws.Plan(context.Background(), Request{Op: "move", File: fooGo, Symbol: "Widget", Target: "example.com/m/baz", Decisions: Decisions{Pull: []string{"nope"}}}); err == nil {
+		t.Error("expected error for a decision naming nothing")
 	}
 }
 
@@ -254,7 +295,7 @@ func Hi() string { return T.Hello() }
 	// users, and reaching into its fields is not a blocker.
 	r, text = plan(t, dir, Request{Op: "move", File: fooGo, Symbol: "Big", Target: "example.com/m/baz"})
 	wantVerdict(t, r, text, VerdictOK)
-	wantAll(t, text, "moves 2 declarations from foo/foo.go to baz/big.go; pulls helper along")
+	wantAll(t, text, "moves 2 declarations from foo/foo.go to baz/big.go (new file); pulls helper along")
 	if n := strings.Count(text, "\n"); n != 2 {
 		t.Errorf("OK report should be two lines, got %d:\n%s", n, text)
 	}
@@ -392,8 +433,23 @@ func TestPlanAdd(t *testing.T) {
 		t.Errorf("foo/extra.go exists:\n%s", text)
 	}
 
-	if _, err := NewWorkspace(dir).Plan(context.Background(), Request{Op: "add", Target: "example.com/m/nope", Source: "const A = 1"}); err == nil {
-		t.Error("expected error for unknown package")
+	r, text = plan(t, dir, Request{Op: "add", Target: "example.com/m/nope", Source: "const A = 1"})
+	wantVerdict(t, r, text, VerdictOK)
+	wantAll(t, text, "nope/a.go (new package)")
+	if _, err := NewWorkspace(dir).Plan(context.Background(), Request{Op: "add", Target: "other.org/x", Source: "const A = 1"}); err == nil {
+		t.Error("expected error for a package outside the module")
+	}
+	// A nested module is not a new package of this one.
+	for _, target := range []string{"example.com/m/sub", filepath.Join(dir, "sub", "x.go"), filepath.Join(dir, "sub", "sub.go"), filepath.Join(dir, "sub", "deeper", "x.go")} {
+		_, err := NewWorkspace(dir).Plan(context.Background(), Request{Op: "add", Target: target, Source: "const A = 1"})
+		if err == nil || !strings.Contains(err.Error(), "module at sub") {
+			t.Errorf("target %s: err = %v, want nested module error", target, err)
+		}
+	}
+	for name, want := range map[string]string{"SG": "sg", "HTTPClient": "http_client", "PushWatcherConfig": "push_watcher_config", "thing": "thing", "ID": "id", "UserID": "user_id"} {
+		if got := snakeCase(name); got != want {
+			t.Errorf("snakeCase(%s) = %s, want %s", name, got, want)
+		}
 	}
 	if _, err := NewWorkspace(dir).Plan(context.Background(), Request{Op: "add", Target: "example.com/m/foo", Source: "func ("}); err == nil {
 		t.Error("expected parse error")
@@ -404,4 +460,132 @@ func TestPlan_UnknownOp(t *testing.T) {
 	if _, err := NewWorkspace(planModule(t)).Plan(context.Background(), Request{Op: "rename"}); err == nil {
 		t.Error("expected error")
 	}
+}
+
+// TestPlanCompiles covers the type-check of add and replace source.
+func TestPlanCompiles(t *testing.T) {
+	dir := planModule(t)
+	fooGo := filepath.Join(dir, "foo", "foo.go")
+
+	r, text := plan(t, dir, Request{Op: "add", File: fooGo, Source: "func there() { nope() }"})
+	wantVerdict(t, r, text, VerdictBlocked)
+	wantAll(t, text, "does not compile: line 1: undefined: nope")
+
+	r, text = plan(t, dir, Request{Op: "add", File: fooGo, Source: "// Env reads.\nfunc Env() string { return os.Getenv(\"A\") }"})
+	wantVerdict(t, r, text, VerdictBlocked)
+	wantAll(t, text, "line 2: undefined: os")
+
+	r, text = plan(t, dir, Request{Op: "add", File: fooGo, Source: "import \"os\"\n\nfunc Env() string { return os.Getenv(\"A\") }"})
+	wantVerdict(t, r, text, VerdictOK)
+	wantAll(t, text, "imports os")
+
+	// Lines count from the source as given, import block and package
+	// clause included.
+	r, text = plan(t, dir, Request{Op: "add", File: fooGo, Source: "package foo\n\nimport \"os\"\n\nfunc X() { _ = os.Args; nope() }"})
+	wantVerdict(t, r, text, VerdictBlocked)
+	wantAll(t, text, "line 5: undefined: nope")
+
+	// A directory whose name is not an identifier cannot be a package.
+	if _, err := NewWorkspace(dir).Plan(context.Background(), Request{Op: "add", Target: "example.com/m/go", Source: "func X() {}"}); err == nil || !strings.Contains(err.Error(), "not a valid package name") {
+		t.Errorf("keyword directory: err = %v", err)
+	}
+
+	r, text = plan(t, dir, Request{Op: "add", File: fooGo, Source: "func fmt() {}"})
+	wantVerdict(t, r, text, VerdictBlocked)
+	wantAll(t, text, "already declared through import")
+
+	r, text = plan(t, dir, Request{Op: "add", File: fooGo, Source: "import \"example.com/nope\"\n\nfunc X() { nope.Y() }"})
+	wantVerdict(t, r, text, VerdictBlocked)
+	wantAll(t, text, "could not import example.com/nope")
+
+	r, text = plan(t, dir, Request{Op: "add", File: fooGo, Source: "func (s fmt.Stringer) X() {}"})
+	wantVerdict(t, r, text, VerdictBlocked)
+	wantAll(t, text, "receiver type fmt.Stringer belongs to another package")
+
+	// A package clause is dropped; a directory is a package target.
+	r, text = plan(t, dir, Request{Op: "add", Target: filepath.Join(dir, "foo"), Source: "package foo\n\nfunc there() {}"})
+	wantVerdict(t, r, text, VerdictOK)
+	wantAll(t, text, "foo/there.go (new file)")
+
+	// Parse errors use the source's own line numbers.
+	if _, err := NewWorkspace(dir).Plan(context.Background(), Request{Op: "add", File: fooGo, Source: "// c\nfunc ("}); err == nil || !strings.Contains(err.Error(), "line 2:") {
+		t.Errorf("parse error = %v", err)
+	}
+
+	r, text = plan(t, dir, Request{Op: "replace", File: fooGo, Symbol: "greet", Source: "func greet(n string) string { return strings.ToUpper(n) }"})
+	wantVerdict(t, r, text, VerdictBlocked)
+	wantAll(t, text, "undefined: strings")
+
+	// One spec of a group is spliced without the keyword.
+	r, text = plan(t, dir, Request{Op: "replace", File: fooGo, Symbol: "alpha", Source: "var alpha = 3"})
+	wantVerdict(t, r, text, VerdictOK)
+	r, text = plan(t, dir, Request{Op: "replace", File: fooGo, Symbol: "alpha", Source: "var alpha = \"s\""})
+	wantVerdict(t, r, text, VerdictOK)
+
+	// A test file is checked with the test variant.
+	r, text = plan(t, dir, Request{Op: "add", Target: filepath.Join(dir, "foo", "foo_test.go"), Source: "import \"testing\"\n\nfunc TestX(t *testing.T) { _ = greet(\"a\") }"})
+	wantVerdict(t, r, text, VerdictOK)
+}
+
+// TestPlanCompilesNewImport covers source importing a package the target
+// reaches only through a dependency: its types must be the ones the
+// dependency refers to.
+func TestPlanCompilesNewImport(t *testing.T) {
+	dir := writeModule(t, map[string]string{
+		"go.mod": "module example.com/h\n\ngo 1.25\n",
+		"h/h.go": `package h
+
+import "net/http"
+
+// Path returns the request path.
+func Path(r *http.Request) string { return r.URL.Path }
+`,
+	})
+	hGo := filepath.Join(dir, "h", "h.go")
+	r, text := plan(t, dir, Request{Op: "add", File: hGo, Source: "import \"net/url\"\n\n// URL returns the request URL.\nfunc URL(r *http.Request) *url.URL { return r.URL }"})
+	wantVerdict(t, r, text, VerdictOK)
+
+	r, text = plan(t, dir, Request{Op: "add", File: hGo, Source: "import \"net/url\"\n\nfunc URL(r *http.Request) *url.URL { return nope(r) }"})
+	wantVerdict(t, r, text, VerdictBlocked)
+	wantAll(t, text, "line 3: undefined: nope")
+}
+
+// TestPlanShape covers kind changes, member use sites and lost interface
+// satisfaction.
+func TestPlanShape(t *testing.T) {
+	dir := planModule(t)
+	fooGo := filepath.Join(dir, "foo", "foo.go")
+
+	r, text := plan(t, dir, Request{Op: "replace", File: fooGo, Symbol: "Widget", Source: "type Widget interface{ W() }"})
+	wantVerdict(t, r, text, VerdictOK)
+	wantAll(t, text, "kind changes from struct to interface")
+
+	r, text = plan(t, dir, Request{Op: "replace", File: fooGo, Symbol: "Tagged", Source: "type Tagged struct{ Label string }"})
+	wantVerdict(t, r, text, VerdictOK)
+	wantAll(t, text, "shape changes: removed Tag, added Label", "Update the uses of removed or changed members (1)", "bar/bar.go:9:", "  .Tag")
+
+	r, text = plan(t, dir, Request{Op: "remove", File: fooGo, Symbol: "Thing.Hello"})
+	wantVerdict(t, r, text, VerdictOK)
+	wantAll(t, text, "Thing stops satisfying 1 interface", "foo.Store.Hello")
+}
+
+// TestPlanMoveDecisions covers exporting the moved symbol itself and the
+// closure fixed point.
+func TestPlanMoveDecisions(t *testing.T) {
+	dir := planModule(t)
+	fooGo := filepath.Join(dir, "foo", "foo.go")
+
+	r, text := plan(t, dir, Request{Op: "move", File: fooGo, Symbol: "greet", Target: "example.com/m/baz"})
+	wantVerdict(t, r, text, VerdictDecisions)
+	wantAll(t, text, "func greet is unexported and used by foo/foo.go:12:41 staying in foo", `decisions.export ["greet"]: move it as Greet`)
+
+	r, text = plan(t, dir, Request{Op: "move", File: fooGo, Symbol: "greet", Target: "example.com/m/baz", Decisions: Decisions{Export: []string{"greet"}}})
+	wantVerdict(t, r, text, VerdictOK)
+	wantAll(t, text, "exports greet as Greet; rewrites 1 use in foo to baz.X")
+
+	// inner is used by Chain.Run and by outer; outer is pulled, so inner
+	// has no other user left and is pulled too, then beta and alpha.
+	r, text = plan(t, dir, Request{Op: "move", File: fooGo, Symbol: "Chain", Target: "example.com/m/baz"})
+	wantVerdict(t, r, text, VerdictOK)
+	wantAll(t, text, "pulls outer, inner, beta, alpha along")
 }

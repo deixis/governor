@@ -178,7 +178,7 @@ type planParams struct {
 }
 
 type planDecisions struct {
-	Export []string `json:"export,omitempty" jsonschema:"Unexported source-package symbols to export in place (move)."`
+	Export []string `json:"export,omitempty" jsonschema:"Unexported symbols to export (move): a shared helper stays and is exported in place; the moved symbol itself is renamed and its remaining users rewritten."`
 	Pull   []string `json:"pull,omitempty" jsonschema:"Shared unexported symbols to move along anyway (move)."`
 }
 
@@ -215,15 +215,21 @@ func registerIntelTools(s *sdkmcp.Server, h *handler) {
 		Description: `Impact of an intended change, without changing anything. Run before editing.
 
 Pass "op" and the fields it needs:
-  add:     "source" (declarations) and "target" (package path, or file path; a new file is
-           named after the first declaration). Reports name collisions and imports.
+  add:     "source" (declarations, with an import block for packages they use) and
+           "target" (package path, directory or file path; a new file is named after
+           the first declaration; a path under the module with no package yet is a new
+           package). The source is type-checked in place: undefined names, missing
+           imports and name clashes are blockers.
   remove:  "file" and "symbol". A type takes its methods along. Reports every use that
            breaks, by package; interface relations lost; declarations left unused.
-  replace: "file", "symbol", "source" (one declaration, same name and kind). Reports
-           signature or shape changes, callers to update, interface methods affected.
-  move:    "file", "symbol", "target" (destination package or file). Reports the moved
-           set, unexported helpers pulled along, shared helpers needing a decision
-           (export or pull), import cycles, references rewritten per package.
+  replace: "file", "symbol", "source" (one declaration, same name and kind, type-checked
+           in place). Reports signature or shape changes, callers to update, uses of
+           removed or changed members, interface methods affected.
+  move:    "file", "symbol", "target" (destination package, directory or file). Reports
+           the moved set, unexported helpers pulled along, shared helpers needing a
+           decision (export or pull), an unexported symbol staying code uses (export it
+           or move the users), import cycles, references rewritten per package. Methods
+           move with their type, not alone.
 Verdicts: OK with a one-line summary and, when needed, what you must do after apply;
 NEEDS DECISION (answer through "decisions" and plan again); BLOCKED (each cause comes
 with a fix). "force": true turns blockers and questions into follow-ups and lets apply
