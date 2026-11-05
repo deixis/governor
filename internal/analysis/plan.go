@@ -456,7 +456,6 @@ var packageClause = regexp.MustCompile(`(?m)^package\s+\w+[^\n]*\n?`)
 // Parse errors carry the line numbers of the text as given.
 func parseSource(src string) (*parsed, error) {
 	src = packageClause.ReplaceAllString(src, "")
-	const prefix = "package p\n\n"
 	fset := token.NewFileSet()
 	f, err := parser.ParseFile(fset, "source.go", "package p\n\n"+src, parser.ParseComments|parser.SkipObjectResolution)
 	if err != nil {
