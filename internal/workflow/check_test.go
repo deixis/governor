@@ -402,7 +402,7 @@ func TestCheck_StaticcheckFailureWithoutIssuesFails(t *testing.T) {
 
 func TestCheck_LintFailureWithoutIssuesFails(t *testing.T) {
 	ar := &argvRunner{results: map[string]*runner.Result{
-		"/stub/golangci-lint run --out-format json ./...": {ExitCode: 126, Stderr: []byte("No version is set for command golangci-lint\n")},
+		"/stub/golangci-lint run --output.json.path stdout ./...": {ExitCode: 126, Stderr: []byte("No version is set for command golangci-lint\n")},
 	}}
 	e := &Engine{
 		Config:       &config.Config{Check: config.CheckConfig{Steps: []string{"lint"}}},
@@ -422,9 +422,74 @@ func TestCheck_LintFailureWithoutIssuesFails(t *testing.T) {
 	}
 }
 
+// golangci-lint v2 rejects --out-format; its JSON output flag is
+// --output.json.path. The version probe picks the flag: v1 only when the
+// version reads as v1, v2 otherwise.
+func TestCheck_LintOutputFlagByVersion(t *testing.T) {
+	issues := []byte(`{"Issues":[{"FromLinter":"errcheck","Text":"unchecked","Pos":{"Filename":"internal/a/a.go","Line":5,"Column":2}}]}`)
+	cases := []struct {
+		name, version, run string
+	}{
+		{"v2", "golangci-lint has version 2.14.0 built with go1.26.0 from abc on 2026-01-01", "/stub/golangci-lint run --output.json.path stdout ./..."},
+		{"v1", "golangci-lint has version v1.64.8 built with go1.24.1 from abc on 2025-03-17", "/stub/golangci-lint run --out-format json ./..."},
+		{"unreadable", "", "/stub/golangci-lint run --output.json.path stdout ./..."},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			ar := &argvRunner{results: map[string]*runner.Result{
+				"/stub/golangci-lint --version": {Stdout: []byte(c.version + "\n")},
+				c.run:                           {ExitCode: 1, Stdout: issues},
+			}}
+			e := &Engine{
+				Config:       &config.Config{Check: config.CheckConfig{Steps: []string{"lint"}}},
+				Runner:       ar,
+				Workspace:    "/project",
+				RepoRoot:     "/project",
+				ToolResolver: func(name string) []string { return []string{"/stub/" + name} },
+			}
+			result, err := e.Check(context.Background(), nil, false)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(result.RunResult.LintIssues) != 1 {
+				t.Errorf("LintIssues = %+v, want one issue from %q", result.RunResult.LintIssues, c.run)
+			}
+		})
+	}
+}
+
+// golangci-lint v2 takes every argument as a directory, so import-path
+// patterns of workspace modules reach it as ./ patterns.
+func TestCheck_LintImportPathPatterns(t *testing.T) {
+	ar := &argvRunner{results: map[string]*runner.Result{
+		"go list -m -f {{.Path}}\t{{.Dir}}": {Stdout: []byte("example.com/m\t/project\nexample.com/m/sub\t/project/sub\n")},
+	}}
+	e := &Engine{
+		Config:       &config.Config{Check: config.CheckConfig{Steps: []string{"lint"}}},
+		Runner:       ar,
+		Workspace:    "/project",
+		RepoRoot:     "/project",
+		ToolResolver: func(name string) []string { return []string{"/stub/" + name} },
+	}
+	in := []string{"example.com/m/internal/route/...", "example.com/m/a", "example.com/m/...", "example.com/m", "example.com/m/sub/x", "./b/...", "golang.org/x/tools/..."}
+	if _, err := e.Check(context.Background(), in, false); err != nil {
+		t.Fatal(err)
+	}
+	want := "/stub/golangci-lint run --output.json.path stdout ./internal/route/... ./a ./... . ./sub/x ./b/... golang.org/x/tools/..."
+	for _, call := range ar.calls {
+		if got := strings.Join(call, " "); strings.HasPrefix(got, "/stub/golangci-lint run") {
+			if got != want {
+				t.Errorf("lint argv:\n got %s\nwant %s", got, want)
+			}
+			return
+		}
+	}
+	t.Error("golangci-lint run not called")
+}
+
 func TestCheck_LintIssuesAttributedToPackage(t *testing.T) {
 	ar := &argvRunner{results: map[string]*runner.Result{
-		"/stub/golangci-lint run --out-format json ./...": {ExitCode: 1, Stdout: []byte(
+		"/stub/golangci-lint run --output.json.path stdout ./...": {ExitCode: 1, Stdout: []byte(
 			`{"Issues":[{"FromLinter":"errcheck","Text":"unchecked","Pos":{"Filename":"internal/a/a.go","Line":5,"Column":2}}]}`,
 		)},
 		"go list -e -f {{.Dir}}\t{{.ImportPath}} ./...": {Stdout: []byte("/project/internal/a\texample.com/m/internal/a\n")},

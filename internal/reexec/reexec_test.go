@@ -21,6 +21,7 @@ func TestDecide(t *testing.T) {
 		{"same toolchain", probe{goVersion: "go1.25.1", self: "go1.25.1", modVersion: "v0.0.1"}, actionInProcess},
 		{"older workspace", probe{goVersion: "go1.24.0", self: "go1.25.1", modVersion: "v0.0.1"}, actionInProcess},
 		{"newer workspace", probe{goVersion: "go1.26.0", self: "go1.25.1", modVersion: "v0.0.1"}, actionCachedBuild},
+		{"newer workspace, modified checkout", probe{goVersion: "go1.26.0", self: "go1.25.1", modVersion: "v0.0.2-0.20260101000000-abcdef012345+dirty"}, actionInProcess},
 		{"newer workspace, devel build", probe{goVersion: "go1.26.0", self: "go1.25.1", modVersion: "(devel)"}, actionInProcess},
 		{"newer workspace, no build info", probe{goVersion: "go1.26.0", self: "go1.25.1"}, actionInProcess},
 		{"probe failed", probe{goVersion: "", self: "go1.25.1", modVersion: "v0.0.1"}, actionInProcess},
