@@ -8,9 +8,11 @@ import (
 	"fmt"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"github.com/deixis/governor/internal/config"
+	"github.com/deixis/governor/internal/gofile"
 	"github.com/deixis/governor/internal/gotool"
 	"github.com/deixis/governor/internal/runner"
 )
@@ -147,10 +149,11 @@ const goFilesTemplate = `{{$d := .Dir}}` +
 	`{{range .TestGoFiles}}{{$d}}/{{.}}{{"\n"}}{{end}}` +
 	`{{range .XTestGoFiles}}{{$d}}/{{.}}{{"\n"}}{{end}}`
 
-// PackageFiles lists the Go source files of the given packages, so that
-// file-based tools (gofumpt, dupl) cover exactly the package scope and
-// not every .go file under the workspace, worktrees and vendored copies
-// included.
+// PackageFiles lists the hand-written Go source files of the given
+// packages, so that file-based tools (gofumpt, dupl) cover exactly the
+// package scope and not every .go file under the workspace, worktrees and
+// vendored copies included. Generated files are left out: nobody edits
+// them, so formatting and duplication findings there are noise.
 func (e *Engine) PackageFiles(ctx context.Context, pkgs []string) ([]string, error) {
 	argv := append([]string{"go", "list", "-f", goFilesTemplate}, pkgs...)
 	res, err := e.Runner.Run(ctx, argv, "")
@@ -160,7 +163,8 @@ func (e *Engine) PackageFiles(ctx context.Context, pkgs []string) ([]string, err
 	if res.ExitCode != 0 {
 		return nil, fmt.Errorf("go list failed (exit %d): %s", res.ExitCode, strings.TrimSpace(string(res.Stderr)))
 	}
-	return nonEmptyLines(res.Stdout), nil
+	files := nonEmptyLines(res.Stdout)
+	return slices.DeleteFunc(files, gofile.Generated), nil
 }
 
 // packageDirs maps each package directory to its import path, so that

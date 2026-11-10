@@ -146,7 +146,7 @@ func (s *snapshot) usesOutside(set *removalSet) (byPkg map[string][]string, gene
 			if f := s.syntaxAt(p, id.Pos()); f != nil {
 				gen, known := generatedFiles[f]
 				if !known {
-					gen = isGenerated(f)
+					gen = ast.IsGenerated(f)
 					generatedFiles[f] = gen
 				}
 				if gen {
@@ -220,7 +220,7 @@ func (s *snapshot) planRemove(req Request) (*Report, error) {
 	}
 	r := &Report{Op: "remove", Subject: req.Symbol}
 	for _, d := range set.decls {
-		if isGenerated(d.file) {
+		if ast.IsGenerated(d.file) {
 			r.block(s.fileOf(d)+" is generated code", "change the generator instead")
 		}
 	}

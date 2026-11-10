@@ -85,12 +85,12 @@ func (s *snapshot) planMove(req Request) (*Report, error) {
 	}
 	r := &Report{Op: "move", Subject: req.Symbol + " -> " + dest.PkgPath}
 	for _, d := range set.decls {
-		if isGenerated(d.file) {
+		if ast.IsGenerated(d.file) {
 			r.block(s.fileOf(d)+" is generated code", "change the generator instead")
 		}
 	}
 	if !target.newFile {
-		if f := fileSyntax(dest, target.file); f != nil && isGenerated(f) {
+		if f := fileSyntax(dest, target.file); f != nil && ast.IsGenerated(f) {
 			r.block(target.where(s.root)+" is generated code", "target another file of the package, or change the generator")
 		}
 	}

@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/deixis/governor/internal/gofile"
 	"golang.org/x/tools/go/analysis/checker"
 	"golang.org/x/tools/go/analysis/passes/modernize"
 	"golang.org/x/tools/go/packages"
@@ -23,6 +24,9 @@ type FixResult struct {
 	Changes []string
 	// Diagnostics are the errors remaining in the file after fixing.
 	Diagnostics []Diagnostic
+	// Generated is set when the file carries a "Code generated" header.
+	// Such files are diagnosed but never rewritten.
+	Generated bool
 	// Err is set when the file could not be processed at all.
 	Err error
 }
@@ -37,7 +41,8 @@ type FixResult struct {
 //  4. diagnostics for the file after reload
 //
 // Files that are not part of the workspace are reported with Err set and
-// left untouched.
+// left untouched. Generated files skip steps 1 to 3: a rewrite would be
+// lost on the next generator run.
 func (w *Workspace) Fix(ctx context.Context, files []string) ([]FixResult, error) {
 	if len(files) == 0 {
 		return nil, fmt.Errorf("no files given")
@@ -48,7 +53,7 @@ func (w *Workspace) Fix(ctx context.Context, files []string) ([]FixResult, error
 	}
 
 	results := make([]FixResult, len(files))
-	paths := make([]string, len(files)) // canonical, "" when not a target
+	paths := make([]string, len(files)) // canonical, "" when not diagnosed
 	targets := make(map[string]int, len(files))
 	for i, f := range files {
 		abs := canonical(f)
@@ -58,6 +63,10 @@ func (w *Workspace) Fix(ctx context.Context, files []string) ([]FixResult, error
 			continue
 		}
 		paths[i] = abs
+		if gofile.Generated(abs) {
+			results[i].Generated = true
+			continue
+		}
 		targets[abs] = i
 	}
 
@@ -87,9 +96,11 @@ func (w *Workspace) Fix(ctx context.Context, files []string) ([]FixResult, error
 	if err != nil {
 		return nil, err
 	}
-	filter := make(map[string]bool, len(targets))
-	for abs := range targets {
-		filter[abs] = true
+	filter := make(map[string]bool, len(paths))
+	for _, abs := range paths {
+		if abs != "" {
+			filter[abs] = true
+		}
 	}
 	for _, d := range snap.diagnostics(filter) {
 		for i, abs := range paths {
@@ -421,7 +432,10 @@ func FormatFixResults(results []FixResult) string {
 			fmt.Fprintf(&b, "  error: %v\n", r.Err)
 			continue
 		}
-		if len(r.Changes) == 0 {
+		switch {
+		case r.Generated:
+			b.WriteString("  skipped: generated code, change the generator instead\n")
+		case len(r.Changes) == 0:
 			b.WriteString("  no changes\n")
 		}
 		for _, c := range r.Changes {
