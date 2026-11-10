@@ -3,9 +3,12 @@ package workflow
 import (
 	"context"
 	"fmt"
+	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 
+	"github.com/deixis/governor/internal/gofile"
 	"github.com/deixis/governor/internal/report"
 )
 
@@ -28,7 +31,26 @@ func (e *Engine) runComplexity(ctx context.Context, packages []string) ([]report
 		return nil, fmt.Errorf("executing gocognit: %w", err)
 	}
 
-	return parseGocognitOutput(result.Stdout), nil
+	return e.dropGenerated(parseGocognitOutput(result.Stdout)), nil
+}
+
+// dropGenerated removes entries from generated files. gocognit has no
+// switch for them, and their complexity is the generator's, not the code
+// author's.
+func (e *Engine) dropGenerated(entries []report.ComplexityEntry) []report.ComplexityEntry {
+	generated := make(map[string]bool)
+	return slices.DeleteFunc(entries, func(c report.ComplexityEntry) bool {
+		gen, seen := generated[c.File]
+		if !seen {
+			path := c.File
+			if !filepath.IsAbs(path) {
+				path = filepath.Join(e.Workspace, path)
+			}
+			gen = gofile.Generated(path)
+			generated[c.File] = gen
+		}
+		return gen
+	})
 }
 
 // parseGocognitOutput parses the default gocognit output format:

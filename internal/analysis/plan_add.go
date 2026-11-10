@@ -274,7 +274,7 @@ func (s *snapshot) planAdd(ctx context.Context, req Request) (*Report, error) {
 		}
 	}
 	if !dest.newFile {
-		if f := fileSyntax(dest.pkg, dest.file); f != nil && isGenerated(f) {
+		if f := fileSyntax(dest.pkg, dest.file); f != nil && ast.IsGenerated(f) {
 			r.block(dest.where(s.root)+" is generated code", "target another file of the package, or change the generator")
 		}
 	}

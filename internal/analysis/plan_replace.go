@@ -59,7 +59,7 @@ func (s *snapshot) planReplace(ctx context.Context, req Request) (*Report, error
 		r.block(req.Symbol+" shares its spec with "+strings.Join(others, ", "),
 			"split the spec so each name has its own, then replace")
 	}
-	if isGenerated(old.file) {
+	if ast.IsGenerated(old.file) {
 		r.block(s.fileOf(old)+" is generated code", "change the generator instead")
 	}
 

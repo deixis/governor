@@ -549,22 +549,6 @@ func bareName(labelled string) string {
 	return labelled
 }
 
-// isGenerated reports whether f carries the standard generated-code
-// header.
-func isGenerated(f *ast.File) bool {
-	for _, g := range f.Comments {
-		if g.Pos() > f.Package {
-			break
-		}
-		for _, c := range g.List {
-			if strings.HasPrefix(c.Text, "// Code generated ") && strings.HasSuffix(c.Text, " DO NOT EDIT.") {
-				return true
-			}
-		}
-	}
-	return false
-}
-
 // fileOf returns the workspace-relative file name holding d.
 func (s *snapshot) fileOf(d decl) string {
 	return relPath(s.root, s.fset.Position(d.file.Pos()).Filename)
